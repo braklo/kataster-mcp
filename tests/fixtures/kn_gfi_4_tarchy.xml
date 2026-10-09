@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<esri_wms:FeatureInfoResponse version="1.3.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:esri_wms="http://www.esri.com/wms"
+	xmlns="http://www.esri.com/wms">
+  <esri_wms:FeatureInfoCollection layername="Ťarchy">
+    <esri_wms:FeatureInfo>
+<esri_wms:CRS>3857</esri_wms:CRS>
+      <esri_wms:Field><esri_wms:FieldName><![CDATA[identifikator]]></esri_wms:FieldName><esri_wms:FieldValue><![CDATA[111222107]]></esri_wms:FieldValue></esri_wms:Field>
+    </esri_wms:FeatureInfo>
+    <esri_wms:FeatureInfo>
+<esri_wms:CRS>3857</esri_wms:CRS>
+      <esri_wms:Field><esri_wms:FieldName><![CDATA[identifikator]]></esri_wms:FieldName><esri_wms:FieldValue><![CDATA[111222108]]></esri_wms:FieldValue></esri_wms:Field>
+    </esri_wms:FeatureInfo>
+  </esri_wms:FeatureInfoCollection>
+</esri_wms:FeatureInfoResponse>

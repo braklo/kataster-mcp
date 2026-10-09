@@ -1,0 +1,26 @@
+# venv, cache, build
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# lokálne dáta a cache (osobné údaje!)
+/data/
+*.sqlite
+*.sqlite-*
+snapshots/
+*.log
+
+# zálohy
+*.bak*
+*.pred-*
+
+# lokálne nastavenia klienta
+.claude/settings.local.json
+
+# lokálny pin z update-mcp-venvs.sh (verejne platí requires-python)
+.python-version

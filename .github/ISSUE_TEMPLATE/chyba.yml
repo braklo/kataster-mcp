@@ -1,0 +1,34 @@
+name: Chyba
+description: Nástroj vrátil zlý údaj, spadol alebo sa správa inak, než by mal. English welcome.
+labels: [chyba]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Do issue nedávajte mená vlastníkov, dátumy narodenia, adresy ani výpisy z listu vlastníctva.
+        Na zopakovanie chyby stačí katastrálne územie a číslo parcely.
+  - type: input
+    id: nastroj
+    attributes:
+      label: Nástroj
+      placeholder: napr. kataster_vrstvy
+    validations:
+      required: true
+  - type: input
+    id: parcela
+    attributes:
+      label: Katastrálne územie a parcela
+      placeholder: napr. Vyšný Kubín, E 503
+  - type: textarea
+    id: co
+    attributes:
+      label: Čo nástroj vrátil a čo ste čakali
+      description: Chybové hlásenie môžete vložiť celé (pole chyba). Osobné údaje z odpovede vynechajte.
+    validations:
+      required: true
+  - type: input
+    id: prostredie
+    attributes:
+      label: Systém, MCP klient a verzia servera
+      description: Verziu vypíše kataster_status.
+      placeholder: napr. Windows 11, Claude Desktop, 0.1.0

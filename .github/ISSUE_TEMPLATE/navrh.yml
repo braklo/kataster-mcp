@@ -1,0 +1,15 @@
+name: Návrh
+description: Údaj o pozemku, ktorý by server mal vedieť, alebo nový zdroj dát. English welcome.
+labels: [navrh]
+body:
+  - type: textarea
+    id: co
+    attributes:
+      label: Čo chcete o pozemku zistiť a načo
+    validations:
+      required: true
+  - type: textarea
+    id: zdroj
+    attributes:
+      label: Odkiaľ by sa to dalo vziať
+      description: Verejná služba, dataset alebo portál, ak ho poznáte (odkaz, licencia).
