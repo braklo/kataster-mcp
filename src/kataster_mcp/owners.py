@@ -12,8 +12,11 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from .cache import O_BINARY, DAY, parser_version, today, ts_iso
+from . import ku as ku_mod
+from . import navod
+from .cache import O_BINARY, PERSONAL_TTL, DAY, next_day_iso, parser_version, purge_files, today, ts_iso
 from .envelope import Envelope, KatasterError
+from .normalize import parcel_number
 from .sources import eskn
 
 OWNERS_TTL = 7 * DAY
@@ -34,9 +37,10 @@ def parser_versions() -> dict:
 
 
 def save_snapshot(app, source: str, text: str) -> str:
-    """Keep the page that broke the parser. May contain personal data -> owner-only on POSIX."""
+    """Keep the page that broke the parser. May contain personal data -> owner-only on POSIX, deleted after 7 days."""
     d = app.data_dir / "snapshots"
     d.mkdir(mode=0o700, exist_ok=True)
+    purge_files(d, PERSONAL_TTL)
     path = d / f"{time.strftime('%Y%m%d-%H%M%S')}_{source}.html"
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | O_BINARY, 0o600)
     with os.fdopen(fd, "w", encoding="utf8", newline="") as f:
@@ -94,6 +98,7 @@ async def lookup_owners(app, env: Envelope, ku: str, cislo: str, register: str =
             env.warn(WARN_UNOFFICIAL)
             return {**data["vysledok"], "limit": _limit_info(app)}
 
+    app.http.guard()  # a remembered block: fail before the quota is counted
     check_and_count(app, key, potvrdene)
 
     ident_hit = app.cache.get(eskn.SOURCE_IDENTIFY, IDENTIFY_VER, key, IDENTIFY_TTL)
@@ -136,6 +141,19 @@ async def lookup_owners(app, env: Envelope, ku: str, cislo: str, register: str =
     return {**result, "limit": _limit_info(app)}
 
 
+def _by_hand(ku: str, cislo: str, register: str) -> list[str]:
+    """Guide for the same parcel in the browser (owners via the parcel detail and the LV preview)."""
+    try:
+        unit = ku_mod.resolve(ku)
+    except KatasterError:
+        unit = None
+    try:
+        reg, number = parcel_number(cislo, register)
+    except KatasterError:
+        reg, number = None, cislo
+    return navod.parcel(unit, reg if reg in ("C", "E") else None, number)
+
+
 def register(mcp, app) -> None:
 
     @mcp.tool()
@@ -151,10 +169,17 @@ def register(mcp, app) -> None:
         Source: the unofficial ESKN portal parcel detail, queried at human pace with a daily limit
         on parcels. Returns LV number, land type (druh pozemku), location in/outside the built-up
         area, legal relation, owners (name, birth date, address, share) and the data date (stav_k).
-        Personal data: use only for the parcel the user asked about; never search by person.
+        Personal data: use only for the parcel the user asked about; never walk parcels to find a person
+        (for a person's parcels use kataster_osoba_navod). On CAPTCHA, a block or the daily limit the error
+        carries a guide (navod) for doing the same in the browser.
         """
         env = Envelope()
         try:
             return env.ok(await lookup_owners(app, env, ku, cislo, register, obnovit, potvrdene))
         except KatasterError as e:
+            if e.kind in ("captcha_required", "blocked", "limit_reached") and not e.navod:
+                e.navod = _by_hand(ku, cislo, register)
+                if e.kind == "limit_reached" and isinstance(e.details, dict):
+                    e.details["kvota_obnovena"] = next_day_iso()
+                    e.message += f" The daily limit resets at {e.details['kvota_obnovena']}; until then use the guide (navod)."
             raise env.fail(e) from e

@@ -20,7 +20,9 @@ bonitu pôdy, úradnú hodnotu, LPIS, záplavové územia, ochranu prírody, les
 | `kataster_skupina` | rozbor viacerých parciel: celková výmera, spoločné hranice, súvislé celky, susedia |
 | `kataster_mapa` | mapu parcely ako PNG, HTML (Leaflet), GeoJSON alebo KML, bez osobných údajov |
 | `kataster_lv` | odkaz na výpis z listu vlastníctva na portáli ESKN (výpis si otvoríte sami) |
-| `kataster_lv_import` | načítanie výpisu LV alebo náhľadu LV, ktorý ste si uložili (HTML alebo PDF) |
+| `kataster_osoba_navod` | postup krok za krokom, ako si v oficiálnom vyhľadávaní portálu ESKN nájsť listy vlastníctva osoby a uložiť ich náhľady (server pri tom na portál nevolá) |
+| `kataster_lv_import` | načítanie výpisu LV alebo náhľadu LV, ktorý ste si uložili (HTML alebo PDF); aj celý priečinok naraz |
+| `kataster_osoba_prehlad` | prehľad parciel a podielov jednej osoby zložený z náhľadov LV, ktoré ste si uložili; bez dotazu na portál |
 | `kataster_status` | verziu, limity a dnešné využitie kvóty |
 
 Vrstvy v `kataster_vrstvy`: bonitovaná pôdnoekologická jednotka (BPEJ), úradná hodnota pôdy, LPIS, užívateľ pôdy,
@@ -31,9 +33,14 @@ Každá odpoveď uvádza zdroj, čas a to, či údaj prišiel z lokálnej cache.
 
 ## Čo zámerne nerobí
 
-- **Nehľadá podľa osoby.** Vlastníkov zistí len pre parcelu, ktorú zadáte (§ 69 ods. 9 zákona č. 162/1995 Z. z.).
+- **Sám nehľadá podľa osoby.** Vlastníkov zistí len pre parcelu, ktorú zadáte. Ak chcete parcely konkrétnej osoby, vyhľadáte
+  ju sami v oficiálnom vyhľadávaní portálu ESKN („Fyzické osoby“), server vás tým prevedie a uložené náhľady listov
+  vlastníctva potom načíta a zloží do prehľadu.
+- **Nenahrádza súpis nehnuteľností podľa § 69 ods. 9 zákona č. 162/1995 Z. z.**, ktorý vydáva úrad len samotnej osobe.
+  Prehľad zložený z náhľadov je informatívny.
 - **Neprechádza celé katastrálne územia** kvôli vlastníkom.
-- **Neobchádza CAPTCHA.** Výpis z listu vlastníctva si otvoríte a uložíte sami, server ho len načíta.
+- **Neobchádza CAPTCHA.** Keď portál CAPTCHA vyžiada, alebo keď je denná kvóta vyčerpaná, server vám poradí presný ručný
+  postup v prehliadači a uložený výpis či náhľad potom načíta.
 - **Nezaťažuje portál.** Medzi dotazmi na kataster.skgeodesy.sk čaká aspoň 3 sekundy a nikdy sa nepýta paralelne.
   Vlastníkov zistí najviac pre 50 parciel denne. Tieto limity sa nedajú vypnúť nastavením.
 

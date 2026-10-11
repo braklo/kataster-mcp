@@ -427,7 +427,7 @@ LAYERS = {
     "bpej": Layer(bpej, (parse_bpej, _merge_by, _share_and_area), "vupop_bpej", BPEJ_URL, False, 90),
     "hodnota": Layer(value, (parse_value, _merge_by, _share_and_area), "vupop_hodnota", VALUE_URL, False, 90),
     "lpis": Layer(lpis, (parse_lpis, _merge_by, _share_and_area), "vupop_lpis", LPIS_URL, False, 30),
-    "uzivatel": Layer(user, (parse_user, nlc_params, _share_and_area), "nlc_uzivatel", NLC_URL, True, 30),
+    "uzivatel": Layer(user, (parse_user, nlc_params, _share_and_area), "nlc_uzivatel", NLC_URL, True, 7),
     "zaplavy": Layer(floods, (parse_floods,), "svp_mpo", SVP_URL, False, 180),
     "ochrana": Layer(protection, (parse_sop, sop_params), "sopsr_wfs", SOP_URL, False, 180),
     "vyska": Layer(elevation, (parse_dmr, dmr_params), "zbgis_dmr", DMR_URL, False, 365),

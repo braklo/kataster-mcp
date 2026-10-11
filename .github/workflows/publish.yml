@@ -2,7 +2,8 @@ name: publish
 
 # Upload to PyPI through trusted publishing (OIDC): no token or password is stored anywhere.
 # A version on PyPI can never be replaced, so this runs only for a published GitHub Release
-# or by hand for an existing tag.
+# or by hand for an existing tag. The upload job runs only when the repository variable
+# PYPI_READY is 'true' (set after the trusted publisher exists on PyPI); otherwise it is skipped.
 on:
   release:
     types: [published]
@@ -39,6 +40,7 @@ jobs:
 
   pypi:
     needs: build
+    if: vars.PYPI_READY == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi

@@ -28,13 +28,15 @@ def now_iso() -> str:
 
 
 class KatasterError(Exception):
-    def __init__(self, kind: str, message: str, *, coverage: Any = None, details: Any = None):
+    def __init__(self, kind: str, message: str, *, coverage: Any = None, details: Any = None,
+                 navod: list[str] | None = None):
         assert kind in ERROR_KINDS, kind
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.coverage = coverage
         self.details = details
+        self.navod = navod  # steps for the user where the server cannot go itself
 
 
 @dataclass
@@ -60,5 +62,7 @@ class Envelope:
             chyba["coverage"] = err.coverage
         if err.details is not None:
             chyba["detail"] = err.details
+        if err.navod:
+            chyba["navod"] = err.navod
         body = {"chyba": chyba, "zdroje": self.zdroje, "varovania": self.varovania}
         return ToolError(json.dumps(body, ensure_ascii=False))

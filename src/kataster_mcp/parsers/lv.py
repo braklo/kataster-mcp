@@ -124,6 +124,41 @@ _LEGEND_KEYS = {"Umiestnenie pozemku": "umiestnenie", "Spoločná nehnuteľnosť
                 "Druh chránenej nehnuteľnosti": "chranena_nehnutelnost", "Druh právneho vzťahu": "pravny_vztah",
                 "Pôvodné katastrálne územie": "povodne_ku"}
 _PARCEL_NO = re.compile(r"^\d+(/\d+)?$")
+_BUILDING_KEYS = {"Súpisné číslo": "supisne_cislo", "Druh stavby": "druh_stavby", "Popis stavby": "popis_stavby",
+                  "Druh chránenej nehnuteľnosti": "chranena_nehnutelnost", "Umiestnenie stavby": "umiestnenie_stavby"}
+_BUILDING_LEGEND = {"Druh stavby": "druh_stavby", "Umiestnenie stavby": "umiestnenie_stavby"}
+_LAND_LV = re.compile(r"vlastníctva\s*č\.\s*(\d[\d ]*\d|\d)")
+
+
+def buildings(rows: list[list[str]]) -> list[dict]:
+    """Buildings table of part A (header 'Súpisné číslo', 'Na pozemku parcelné číslo', ...) -> rows; a following
+    'Právny vzťah k pozemku ...' row is attached to the building above it (it names the LV of the land)."""
+    out: list[dict] = []
+    columns: list[str] = []
+    for cells in rows:
+        text = " ".join(c for c in cells if c)
+        if cells and cells[0].startswith("Súpisné"):
+            columns = ["parcela" if c.lower().startswith(("na pozemku", "na parcele")) else
+                       _BUILDING_KEYS.get(" ".join(c.split()), c) for c in cells]
+            continue
+        if columns and len(cells) == len(columns):
+            row = dict(zip(columns, cells))
+            if _PARCEL_NO.match(row.get("parcela", "")):
+                out.append(row)
+                continue
+        if text.startswith("Právny vzťah") and out:
+            out[-1]["pravny_vztah_k_pozemku"] = text.replace("\n", " ")
+            m = _LAND_LV.search(text)
+            if m:
+                out[-1]["lv_pozemku"] = m.group(1).replace(" ", "")
+    return out
+
+
+def translate(rows: list[dict], legend: dict) -> None:
+    for row in rows:
+        for key, mapping in legend.items():
+            if row.get(key) in mapping:
+                row[key] = mapping[row[key]]
 
 
 def parse_lv(page: str) -> dict:
@@ -144,6 +179,7 @@ def parse_rows(rows: list[list[str]]) -> dict:
     columns: list[str] = []
     legend_key = None
     owner = None
+    building_rows: list[list[str]] | None = None  # part A buildings table (not verified on a real extract)
     for cells in rows:
         text = " ".join(cells)
         m = re.search(r"LISTU VLASTNÍCTVA č\.\s*(\d+)", text)
@@ -166,7 +202,15 @@ def parse_rows(rows: list[list[str]]) -> dict:
         if section == "A":
             mreg = re.search(r"Parcely registra\s*[„\"“]?([CE])", text)
             if mreg:
-                register = mreg.group(1)
+                register, building_rows = mreg.group(1), None
+                continue
+            if re.match(r"Stavby\b", text) or cells[0].startswith("Súpisné"):
+                building_rows = [] if building_rows is None else building_rows
+                if not text.startswith("Stavby"):
+                    building_rows.append(cells)
+                continue
+            if building_rows is not None and text != "Legenda":
+                building_rows.append(cells)
                 continue
             if cells[0] in _HEADER_KEYS or cells[0] == "Parcelné číslo":
                 columns = [_HEADER_KEYS.get(c, c) for c in cells]
@@ -186,8 +230,8 @@ def parse_rows(rows: list[list[str]]) -> dict:
                 result["cast_a"][-1]["ine_udaje"] = text.split(":", 1)[1].strip()
                 continue
         if section == "A-legend":
-            if len(cells) == 1 and cells[0] in _LEGEND_KEYS:
-                legend_key = _LEGEND_KEYS[cells[0]]
+            if len(cells) == 1 and (cells[0] in _LEGEND_KEYS or cells[0] in _BUILDING_LEGEND):
+                legend_key = _LEGEND_KEYS.get(cells[0]) or _BUILDING_LEGEND[cells[0]]
                 result["legenda"].setdefault(legend_key, {})
                 continue
             if len(cells) == 2 and legend_key:
@@ -216,16 +260,16 @@ def parse_rows(rows: list[list[str]]) -> dict:
             if text.startswith("Výpis je nepoužiteľný"):
                 continue
             result["cast_c"].append(text.replace("\n", " "))
+    result["stavby"] = buildings(building_rows or [])
+    if not result["stavby"] and any("Súpisné" in t for t in flat):
+        result["stavby_neprecitane"] = True
     # translate coded columns by the legend
-    for row in result["cast_a"]:
-        for key, mapping in result["legenda"].items():
-            code = row.get(key)
-            if code in mapping:
-                row[key] = mapping[code]
+    translate(result["cast_a"], {k: v for k, v in result["legenda"].items() if k not in _BUILDING_LEGEND.values()})
+    translate(result["stavby"], {k: v for k, v in result["legenda"].items() if k != "umiestnenie"})
     if "lv" not in result:
         raise ValueError("LV number not found")
     result["tarchy"] = "none" if result["cast_c"] in ([], ["Bez tiarch."]) else "see cast_c"
     return result
 
 
-PARSERS = (parse_lv, parse_rows, rows_of, split_person, _kv, _clean, _Rows)
+PARSERS = (parse_lv, parse_rows, rows_of, split_person, buildings, translate, _kv, _clean, _Rows)

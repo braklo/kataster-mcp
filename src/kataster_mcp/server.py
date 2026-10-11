@@ -15,19 +15,21 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from . import __version__, ku as ku_mod
-from .cache import DAY, Cache, Quota, default_data_dir, parser_version, protection, today, ts_iso
+from .cache import DAY, PERSONAL_TTL, Cache, Quota, default_data_dir, parser_version, protection, purge_files, today, ts_iso
 from .envelope import Envelope, KatasterError
 from .http import Http
 from .normalize import parcel_number
 from .policy import PUBLIC_POLICY, Policy
 from .sources import wfs
-from . import lv, mapa, owners, skupina, vrstvy
+from . import lv, mapa, osoba, owners, skupina, vrstvy
 
 INSTRUCTIONS = """\
 Slovak land registry (kataster nehnuteľností SR). Look up a cadastral unit (k.ú., katastrálne územie)
 with kataster_ku, then a parcel (parcela, register C or E) with kataster_parcela.
 Every answer carries its sources (zdroje) with time and whether it came from the local cache.
-Data are informative, not an official extract (výpis z LV)."""
+Data are informative, not an official extract (výpis z LV).
+Where the server cannot go itself (CAPTCHA, official search by person, eID) an answer or error carries
+'navod': steps for the user; walk the user through them one at a time."""
 
 GEOMETRY_TTL = 30 * DAY
 NEGATIVE_TTL = 1 * DAY
@@ -53,7 +55,8 @@ ExtraTool = Callable[[FastMCP, App], None]
 def create_server(policy: Policy = PUBLIC_POLICY, extra_tools: Iterable[ExtraTool] = (),
                   *, data_dir: Path | None = None, http: Http | None = None) -> FastMCP:
     data_dir = data_dir or default_data_dir()
-    osoby = Cache(data_dir / "osoby.sqlite", private=True)
+    osoby = Cache(data_dir / "osoby.sqlite", private=True, max_age_s=PERSONAL_TTL)
+    purge_files(data_dir / "snapshots", PERSONAL_TTL)
     app = App(
         policy=policy,
         http=http or Http(policy),
@@ -62,6 +65,7 @@ def create_server(policy: Policy = PUBLIC_POLICY, extra_tools: Iterable[ExtraToo
         quota=Quota(osoby.db),
         data_dir=data_dir,
     )
+    app.http.blocks = app.cache
     mcp = FastMCP("kataster", instructions=INSTRUCTIONS)
     _register_core(mcp, app)
     for register in extra_tools:
@@ -122,6 +126,7 @@ def _register_core(mcp: FastMCP, app: App) -> None:
     skupina.register(mcp, app)
     mapa.register(mcp, app)
     lv.register(mcp, app)
+    osoba.register(mcp, app)
 
     @mcp.tool()
     async def kataster_ku(

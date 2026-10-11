@@ -112,7 +112,7 @@ def rows_from_runs(runs: list[dict]) -> list[list[str]]:
             section = "A-legend"
 
         if section == "A":
-            if re.search(r"Parcely registra", text):
+            if re.search(r"Parcely registra", text) or re.match(r"Stavby\b", text):  # buildings: not seen in a PDF yet
                 rows.append(cells)
                 band, cols = [], []
                 continue

@@ -69,25 +69,68 @@ def today() -> str:
     return datetime.now(TZ).date().isoformat()
 
 
+def next_day_iso() -> str:
+    """Midnight starting the next calendar day in Bratislava (when the daily quota resets)."""
+    from datetime import timedelta
+
+    d = datetime.now(TZ).date() + timedelta(days=1)
+    return datetime(d.year, d.month, d.day, tzinfo=TZ).isoformat(timespec="seconds")
+
+
 def _ensure_private_file(path: Path) -> None:
     if not path.exists():
         os.close(os.open(path, os.O_CREAT | os.O_WRONLY | O_BINARY, 0o600))
     restrict(path, 0o600)
 
 
+PERSONAL_TTL = 7 * DAY  # personal data (owners, imported LVs, page snapshots) is deleted after this
+
+
+def purge_files(directory: Path, max_age_s: float) -> int:
+    """Delete files older than max_age_s (by modification time); returns how many."""
+    if not directory.is_dir():
+        return 0
+    limit = time.time() - max_age_s
+    n = 0
+    for f in directory.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < limit:
+                f.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
 class Cache:
-    def __init__(self, path: Path, *, private: bool):
+    """SQLite cache. With max_age_s (personal data) rows older than that are physically deleted when the
+    cache opens (then VACUUM) and after every write; freed pages are overwritten (secure_delete)."""
+
+    def __init__(self, path: Path, *, private: bool, max_age_s: float | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
         restrict(path.parent, 0o700)
         if private:
             _ensure_private_file(path)
         self.path = path
+        self.max_age_s = max_age_s
         self.db = sqlite3.connect(path, check_same_thread=False)
+        if max_age_s is not None:
+            self.db.execute("PRAGMA secure_delete=ON")
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS cache (zdroj TEXT, ver TEXT, kluc TEXT, ulozene REAL, data TEXT,"
             " PRIMARY KEY (zdroj, ver, kluc))"
         )
         self.db.commit()
+        if max_age_s is not None and self.purge():
+            self.db.execute("VACUUM")
+
+    def purge(self) -> int:
+        """Delete rows older than max_age_s, whatever their source or version; returns how many."""
+        if self.max_age_s is None:
+            return 0
+        n = self.db.execute("DELETE FROM cache WHERE ulozene < ?", (time.time() - self.max_age_s,)).rowcount
+        self.db.commit()
+        return n
 
     def get(self, zdroj: str, ver: str, kluc: str, ttl_s: float | None):
         row = self.db.execute(
@@ -107,6 +150,7 @@ class Cache:
             (zdroj, ver, kluc, ts, json.dumps(data, ensure_ascii=False)),
         )
         self.db.commit()
+        self.purge()
         return ts
 
     def stats(self) -> dict:

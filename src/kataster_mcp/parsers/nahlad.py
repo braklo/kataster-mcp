@@ -8,7 +8,7 @@ Output has the same shape as parsers.lv.parse_lv so kataster_lv_import treats bo
 import html as htmllib
 import re
 
-from .lv import _HEADER_KEYS, rows_of, split_person
+from .lv import _BUILDING_LEGEND, _HEADER_KEYS, buildings, rows_of, split_person, translate
 
 _TOOLTIP = re.compile(
     r'<div class="m-bottom-xs">\s*([^<]+?)\s*</div>\s*<div class="display-table">\s*'
@@ -44,12 +44,17 @@ def parse_nahlad(page: str) -> dict:
 
     legend: dict = {}
     for label, code, text in _TOOLTIP.findall(page):
-        key = _LEGEND_KEYS.get(_text(label))
+        key = _LEGEND_KEYS.get(_text(label)) or _BUILDING_LEGEND.get(_text(label))
         if key and code:
             legend.setdefault(key, {})[code] = _text(text)
 
     cast_a = []
-    part_a = _section(page, "cast-a", "cast-b")
+    # part A is a list of accordions: parcels of register C, of register E, buildings (class i_stavba)
+    pieces = re.split(r'(?=<div[^>]*pf-accordion-header-h3)', _section(page, "cast-a", "cast-b"))
+    is_building = ["i_stavba" in piece.split(">", 1)[0] for piece in pieces]
+    part_a = "".join(piece for piece, b in zip(pieces, is_building) if not b)
+    stavby = buildings(rows_of("".join(piece for piece, b in zip(pieces, is_building) if b)))
+    translate(stavby, {k: v for k, v in legend.items() if k in _BUILDING_LEGEND.values()})
     chunks = re.split(r"Parcely registra\s*[„\"“]?([CE])", part_a)
     for reg, chunk in zip(chunks[1::2], chunks[2::2]):
         columns = []
@@ -64,9 +69,7 @@ def parse_nahlad(page: str) -> dict:
                 vm = re.match(r"^(\d+)", str(row.get("vymera_m2", "")))
                 if vm:
                     row["vymera_m2"] = int(vm.group(1))
-                for key, mapping in legend.items():
-                    if row.get(key) in mapping:
-                        row[key] = mapping[row[key]]
+                translate([row], {k: v for k, v in legend.items() if k not in _BUILDING_LEGEND.values()})
                 cast_a.append(row)
 
     owners = []
@@ -74,9 +77,12 @@ def parse_nahlad(page: str) -> dict:
         nonempty = [c for c in cells if c]
         if len(nonempty) >= 3 and re.search(r"(?m)^\d+\.$", nonempty[0]):
             order = int(nonempty[0].splitlines()[-1].rstrip("."))
-            person = "\n".join(ln for ln in nonempty[1].splitlines()[1:]) or nonempty[1]
+            lines = nonempty[1].splitlines()[1:] or [nonempty[1]]
             share = nonempty[2].splitlines()[-1].replace(" ", "")
-            owners.append({"poradie": order, **split_person(person.replace("\n", ", ")), "podiel": share})
+            if lines[0] == "BSM":  # joint property of spouses: one line per spouse, the share belongs to both
+                owners += [{"poradie": order, **split_person(ln), "podiel": share, "bsm": True} for ln in lines[1:]]
+            else:
+                owners.append({"poradie": order, **split_person(", ".join(lines)), "podiel": share})
         elif nonempty and nonempty[0].startswith("Titul nadobudnutia") and owners:
             owners[-1]["titul_nadobudnutia"] = " ".join(nonempty[0].splitlines()[1:])
     cast_c = [" ".join(c for c in cells if c) for cells in rows_of(_section(page, "cast-c", None).split("</table>")[0])]
@@ -86,6 +92,7 @@ def parse_nahlad(page: str) -> dict:
         "lv": m.group(1),
         "hlavicka": head,
         "cast_a": cast_a,
+        "stavby": stavby,
         "cast_b": {"vlastnici": owners, "ine_opravnene_osoby": []},
         "cast_c": cast_c,
         "legenda": legend,
