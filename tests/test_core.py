@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from kataster_mcp import ku
 from kataster_mcp.cache import POSIX, Cache, Quota
@@ -168,9 +168,7 @@ def _wfs_handler(calls):
 
 async def _call(server, name, args):
     res = await server.call_tool(name, args)
-    # FastMCP returns (content, structured) for dict results
-    structured = res[1] if isinstance(res, tuple) else None
-    return structured.get("result", structured) if structured else json.loads(res[0].text)
+    return res.structured_content or json.loads(res.content[0].text)
 
 
 @pytest.mark.anyio

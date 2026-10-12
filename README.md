@@ -70,6 +70,58 @@ claude mcp add kataster -- uvx --from git+https://github.com/braklo/kataster-mcp
 
 Potom sa stačí opýtať, napríklad: *„Čo je za pozemok E 503 v katastrálnom území Vyšný Kubín a kto ho vlastní?“*
 
+## Lokálne CLI a skill
+
+Balík poskytuje aj `sk-kataster`. Po inštalácii cez `uv tool install .` alebo v checkout-e
+cez `uv run sk-kataster` možno spustiť:
+
+```sh
+sk-kataster --json doctor
+sk-kataster --json ku resolve 'Vyšný Kubín'
+sk-kataster --json lv inspect '/absolutna/cesta/vypis.pdf'
+sk-kataster --json lv import '/absolutna/cesta/vypis.pdf' --dry-run
+sk-kataster --json lv import '/absolutna/cesta/vypis.pdf'
+sk-kataster --json person overview --ico 12345678
+sk-kataster --json tools
+sk-kataster --json tools kataster_parcela
+```
+
+`doctor`, `ku`, `lv inspect`, `lv url`, `lv import` a `person overview` nevolajú portál.
+`lv inspect` a `lv import --dry-run` nezapisujú cache. Kontrola a import vracajú predvolene
+súhrn; `--full` pridá parcely a osobné údaje vlastníkov. `tools` vracia iba názvy,
+`tools NAZOV` schému jedného nástroja. `call NAZOV '{"argument":"hodnota"}'` vykoná
+MCP nástroj a podľa zvoleného nástroja môže volať portál alebo zapisovať súbory.
+Chyby majú JSON obálku a nenulový exit code. Výstup používa UTF-8 aj na Windows.
+
+CLI a stdio štandardne zdieľajú existujúci dátový adresár `kataster-mcp`.
+Premenná `KATASTER_DATA_DIR` ho môže explicitne zmeniť pre oba vstupy;
+CLI navyše podporuje `--data-dir`. Predvolená cesta ani ochranné limity sa nemenia.
+Voliteľný [skill pre AI klientov](skills/kataster/SKILL.md) opisuje úzke volania,
+význam varovaní a prácu s osobnými údajmi. Skill treba pridať do klienta samostatne.
+
+## Čítanie a opakovaný import LV
+
+`tarchy=unknown` znamená chýbajúcu alebo prázdnu časť C. `none` vyžaduje explicitné
+„Bez tiarch.“ v prečítanom texte; vzťahuje sa iba na dodaný rozsah. Ostatný obsah zostáva
+`see cast_c`. Pole `uplnost` uvádza časti `missing`, `unread` alebo `read` a rozsah
+`partial` alebo `unverified`. Prečítanie A/B/C nepotvrdzuje úplnosť dokumentu.
+
+Starší, nedatovaný alebo užší import nenahradí lepší uložený LV. Pri
+`ulozenie.stav=preserved_existing` odpoveď opisuje nový vstup, zatiaľ čo prehľad osoby
+naďalej používa predchádzajúci záznam. Zmenšenie počtu parciel, stavieb alebo vlastníkov
+môže byť aj skutočnou zmenou: vyžaduje ručné preverenie a starší záznam sa nesmie
+prezentovať ako potvrdený aktuálny stav. Táto ochrana nie je archív nemenných verzií.
+Zdroj dávkového importu odkazuje na vybraný dokument.
+
+IČO musí mať presne osem ASCII číslic, prípadne oddelených medzerami. Ide o kontrolu
+formátu, nie pridelenia IČO alebo kontrolnej číslice. Inline HTML má rovnaký limit
+20 MiB ako súbor. Zmena parsera zmení kľúč jeho cache verzie; staršie importy sa
+automaticky nemigrujú a treba ich znova importovať z pôvodných dokumentov.
+
+SDK je pinované na `mcp[cli]==2.3.0`; stdio a 11 nástrojov zostávajú zachované.
+Rozšírenia cez `create_server(policy, extra_tools)` dostávajú `MCPServer` namiesto
+`FastMCP`; priame programové volanie SDK vracia `CallToolResult`.
+
 ## Osobné údaje
 
 Mená, dátumy narodenia a adresy vlastníkov sa ukladajú len lokálne, do súboru `osoby.sqlite` v dátovom adresári

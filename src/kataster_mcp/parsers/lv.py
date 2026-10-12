@@ -166,6 +166,27 @@ def parse_lv(page: str) -> dict:
     return {**parse_rows(rows_of(page)), "zdroj_typ": "vypis_lv_html"}
 
 
+def coverage(data: dict, present: set[str], *, partial: bool = False) -> dict:
+    """Reading evidence, never a claim that every page or property was supplied."""
+    read = {
+        "A": bool(data.get("cast_a") or data.get("stavby")),
+        "B": bool(data["cast_b"]["vlastnici"] or data["cast_b"]["ine_opravnene_osoby"]),
+        "C": bool(data["cast_c"]),
+    }
+    return {
+        **{f"cast_{s.lower()}": "missing" if s not in present else "read" if read[s] else "unread"
+           for s in ("A", "B", "C")},
+        "rozsah": "partial" if partial else "unverified",
+    }
+
+
+def encumbrances(lines: list[str]) -> str:
+    """An explicit negative statement is required; empty content is unknown."""
+    if not lines:
+        return "unknown"
+    return "none" if lines == ["Bez tiarch."] else "see cast_c"
+
+
 def parse_rows(rows: list[list[str]]) -> dict:
     """State machine over rows of cells; shared by the HTML and the PDF extract."""
     flat = [" ".join(r) for r in rows]
@@ -175,6 +196,7 @@ def parse_rows(rows: list[list[str]]) -> dict:
     result: dict = {"hlavicka": head, "cast_a": [], "cast_b": {"vlastnici": [], "ine_opravnene_osoby": []},
                     "cast_c": [], "legenda": {}}
     section = None
+    present: set[str] = set()
     register = None
     columns: list[str] = []
     legend_key = None
@@ -191,12 +213,15 @@ def parse_rows(rows: list[list[str]]) -> dict:
                 head[label] = " ".join(vals)
             continue
         if text.startswith("ČASŤ A"):
+            present.add("A")
             section = "A"
             continue
         if text.startswith("ČASŤ B"):
+            present.add("B")
             section, owner = "B", None
             continue
         if text.startswith("ČASŤ C"):
+            present.add("C")
             section = "C"
             continue
         if section == "A":
@@ -268,8 +293,9 @@ def parse_rows(rows: list[list[str]]) -> dict:
     translate(result["stavby"], {k: v for k, v in result["legenda"].items() if k != "umiestnenie"})
     if "lv" not in result:
         raise ValueError("LV number not found")
-    result["tarchy"] = "none" if result["cast_c"] in ([], ["Bez tiarch."]) else "see cast_c"
+    result["tarchy"] = encumbrances(result["cast_c"])
+    result["uplnost"] = coverage(result, present, partial=any("čiastočný" in t.casefold() for t in flat))
     return result
 
 
-PARSERS = (parse_lv, parse_rows, rows_of, split_person, buildings, translate, _kv, _clean, _Rows)
+PARSERS = (parse_lv, parse_rows, rows_of, split_person, buildings, translate, _kv, _clean, _Rows, coverage, encumbrances)

@@ -8,7 +8,7 @@ Output has the same shape as parsers.lv.parse_lv so kataster_lv_import treats bo
 import html as htmllib
 import re
 
-from .lv import _BUILDING_LEGEND, _HEADER_KEYS, buildings, rows_of, split_person, translate
+from .lv import _BUILDING_LEGEND, _HEADER_KEYS, buildings, coverage, encumbrances, rows_of, split_person, translate
 
 _TOOLTIP = re.compile(
     r'<div class="m-bottom-xs">\s*([^<]+?)\s*</div>\s*<div class="display-table">\s*'
@@ -87,7 +87,7 @@ def parse_nahlad(page: str) -> dict:
             owners[-1]["titul_nadobudnutia"] = " ".join(nonempty[0].splitlines()[1:])
     cast_c = [" ".join(c for c in cells if c) for cells in rows_of(_section(page, "cast-c", None).split("</table>")[0])]
     cast_c = [t for t in cast_c if t]
-    return {
+    result = {
         "zdroj_typ": "nahlad_lv",
         "lv": m.group(1),
         "hlavicka": head,
@@ -96,9 +96,11 @@ def parse_nahlad(page: str) -> dict:
         "cast_b": {"vlastnici": owners, "ine_opravnene_osoby": []},
         "cast_c": cast_c,
         "legenda": legend,
-        "tarchy": "none" if not cast_c else "see cast_c",
+        "tarchy": encumbrances(cast_c),
         "poznamka": "LV preview from the ESKN portal: no administrators/tenants section; encumbrances as shown on the page.",
     }
+    result["uplnost"] = coverage(result, {s.upper() for s in ("a", "b", "c") if f'class="cast-{s}"' in page})
+    return result
 
 
 PARSERS = (parse_nahlad, _text, _section)

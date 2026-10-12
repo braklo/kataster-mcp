@@ -93,4 +93,4 @@ def test_parse_nahlad_fixture_matches_extract():
     assert [x["podiel"] for x in o] == ["1/2", "1/2"]
     assert (o[0]["meno"], o[0]["datum_narodenia"]) == ("FIKTÍVNY Vlastník", "01.01.1900")
     assert o[0]["adresa"].startswith("Testovacia") and o[0]["titul_nadobudnutia"].startswith("Zmluva č. TEST")
-    assert n["tarchy"] == "none"
+    assert n["tarchy"] == "unknown"  # Empty preview is not an explicit negative statement.
