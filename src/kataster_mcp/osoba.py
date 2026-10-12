@@ -50,9 +50,21 @@ def share(text: str | None) -> Fraction | None:
 
 def fits(owner: dict, want: list[str], ico: str | None) -> bool:
     """Every query word is in the owner's name (any order; the maiden name after 'r.' counts), or the IČO matches."""
-    if ico:
-        return re.sub(r"\D", "", owner.get("ico") or "") == re.sub(r"\D", "", ico)
+    if ico is not None:
+        expected = norm_ico(ico)
+        actual = re.sub(r"\s", "", owner.get("ico") or "")
+        return actual == expected
     return bool(want) and set(want) <= set(tokens(owner.get("meno") or ""))
+
+
+def norm_ico(text: str | None) -> str | None:
+    """Accept eight ASCII digits with optional whitespace; do not invent missing digits."""
+    if text is None:
+        return None
+    value = re.sub(r"\s", "", text)
+    if not re.fullmatch(r"[0-9]{8}", value):
+        raise KatasterError("invalid_input", "IČO musí obsahovať presne osem číslic (0-9).")
+    return value
 
 
 def imported(app) -> list[tuple[dict, float]]:
@@ -138,6 +150,7 @@ def register(mcp, app) -> None:
         """
         env = Envelope()
         try:
+            ico = norm_ico(ico)
             unit = ku_mod.resolve(ku)
             env.source("eskn_vyhladavanie", navod.SEARCH_URL, oficialny=True, z_cache=False)
             return env.ok({
@@ -169,6 +182,7 @@ def register(mcp, app) -> None:
         """
         env = Envelope()
         try:
+            ico = norm_ico(ico)
             want = tokens(" ".join(x for x in (priezvisko, meno, nazov) if x))
             if not ico and len(want) < (1 if nazov else 2):
                 raise KatasterError("invalid_input", "Give the surname and first name, or the legal person's name or IČO.")

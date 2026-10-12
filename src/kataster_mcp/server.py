@@ -11,11 +11,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from . import __version__, ku as ku_mod
-from .cache import DAY, PERSONAL_TTL, Cache, Quota, default_data_dir, parser_version, protection, purge_files, today, ts_iso
+from .cache import DAY, PERSONAL_TTL, Cache, Quota, default_data_dir, parser_version, protection, purge_files, configured_data_dir, today, ts_iso
 from .envelope import Envelope, KatasterError
 from .http import Http
 from .normalize import parcel_number
@@ -49,11 +49,11 @@ class App:
     data_dir: Path
 
 
-ExtraTool = Callable[[FastMCP, App], None]
+ExtraTool = Callable[[MCPServer, App], None]
 
 
 def create_server(policy: Policy = PUBLIC_POLICY, extra_tools: Iterable[ExtraTool] = (),
-                  *, data_dir: Path | None = None, http: Http | None = None) -> FastMCP:
+                  *, data_dir: Path | None = None, http: Http | None = None) -> MCPServer:
     data_dir = data_dir or default_data_dir()
     osoby = Cache(data_dir / "osoby.sqlite", private=True, max_age_s=PERSONAL_TTL)
     purge_files(data_dir / "snapshots", PERSONAL_TTL)
@@ -66,7 +66,7 @@ def create_server(policy: Policy = PUBLIC_POLICY, extra_tools: Iterable[ExtraToo
         data_dir=data_dir,
     )
     app.http.blocks = app.cache
-    mcp = FastMCP("kataster", instructions=INSTRUCTIONS)
+    mcp = MCPServer("kataster", instructions=INSTRUCTIONS, version=__version__)
     _register_core(mcp, app)
     for register in extra_tools:
         register(mcp, app)
@@ -120,7 +120,7 @@ async def find_parcel(app: App, env: Envelope, ku: str, cislo: str, register: st
     return found[0]
 
 
-def _register_core(mcp: FastMCP, app: App) -> None:
+def _register_core(mcp: MCPServer, app: App) -> None:
     owners.register(mcp, app)
     vrstvy.register(mcp, app)
     skupina.register(mcp, app)
@@ -217,7 +217,7 @@ def _with_ku(p: dict) -> dict:
 
 
 def main() -> None:
-    create_server(PUBLIC_POLICY).run()
+    create_server(PUBLIC_POLICY, data_dir=configured_data_dir()).run()
 
 
 if __name__ == "__main__":

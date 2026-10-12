@@ -24,3 +24,6 @@ jobs:
           python-version: ${{ matrix.python }}
       # offline only: pyproject addopts deselect tests marked "live" (real endpoints, human pace)
       - run: uv run --locked pytest
+      - run: uv build
+      - name: CLI outside checkout
+        run: uv run --locked python -c "import os, subprocess, sys, tempfile; os.chdir(tempfile.gettempdir()); subprocess.run([sys.executable, '-m', 'kataster_mcp.cli', '--json', 'doctor'], check=True)"

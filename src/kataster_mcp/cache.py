@@ -43,6 +43,12 @@ def default_data_dir(platform: str | None = None, env: dict | None = None) -> Pa
     return Path(base) / "kataster-mcp"
 
 
+def configured_data_dir() -> Path:
+    """Use an explicit local directory while preserving the upstream default."""
+    configured = os.environ.get("KATASTER_DATA_DIR")
+    return Path(configured).expanduser() if configured else default_data_dir()
+
+
 # os.open() on Windows opens the C runtime descriptor in text mode unless O_BINARY is given (0 on POSIX).
 O_BINARY = getattr(os, "O_BINARY", 0)
 

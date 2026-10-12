@@ -5,6 +5,7 @@ The extract is behind Google reCAPTCHA; the user opens it in a browser and solve
 """
 
 from pathlib import Path
+from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import urlencode
 
@@ -12,7 +13,7 @@ from pydantic import Field
 
 from . import ku as ku_mod
 from . import navod
-from .cache import parser_version, ts_iso
+from .cache import PERSONAL_TTL, Cache, parser_version, ts_iso
 from .envelope import Envelope, KatasterError
 from .normalize import parcel_number
 from .parsers import lv as lv_parser
@@ -77,9 +78,53 @@ def _files(path: str) -> list[Path]:
 def _rank(data: dict) -> tuple:
     """Which of two copies of one LV wins: newer data date, then the extract over the preview."""
     raw = data["hlavicka"].get("Údaje platné k", "")
-    d = raw.split(" ")[0].split(".")
-    date = tuple(int(x) for x in reversed(d)) if len(d) == 3 and all(x.isdigit() for x in d) else ()
+    date = ()
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y"):
+        try:
+            parsed = datetime.strptime(raw.strip(), fmt)
+            date = (parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second)
+            break
+        except ValueError:
+            continue
     return date, data.get("zdroj_typ") != "nahlad_lv"
+
+
+def can_replace(candidate: dict, previous: dict) -> bool:
+    """Conservative local-cache selection; a shrinking scope needs explicit review."""
+    if _rank(candidate) < _rank(previous):
+        return False
+    new, old = candidate.get("uplnost", {}), previous.get("uplnost", {})
+    if new.get("rozsah") == "partial" and old.get("rozsah") != "partial":
+        return False
+    for part in ("cast_a", "cast_b", "cast_c"):
+        if old.get(part) == "read" and new.get(part) != "read":
+            return False
+    def owner_key(owner: dict) -> tuple[str, str, str]:
+        return tuple(" ".join((owner.get(k) or "").casefold().split())
+                     for k in ("meno", "datum_narodenia", "ico"))
+
+    before_owners = {owner_key(o) for o in previous["cast_b"]["vlastnici"]}
+    after_owners = {owner_key(o) for o in candidate["cast_b"]["vlastnici"]}
+    if not before_owners <= after_owners:
+        return False
+    for key, fields in (("cast_a", ("register", "cislo")), ("stavby", ("supisne_cislo", "parcela"))):
+        before = {tuple(row.get(k) for k in fields) for row in previous.get(key, [])}
+        after = {tuple(row.get(k) for k in fields) for row in candidate.get(key, [])}
+        if not before <= after:
+            return False
+    return True
+
+
+def store_import(cache: Cache, data: dict, names: list[str]) -> tuple[float, bool]:
+    """Select under a SQLite write lock, preserving the old timestamp when rejected."""
+    key = f"{ku_code(data['hlavicka'].get('Katastrálne územie', ''))}|{data['lv']}"
+    with cache.db:
+        cache.db.execute("BEGIN IMMEDIATE")
+        previous = cache.get(IMPORT, LV_VER, key, PERSONAL_TTL)
+        if previous and not can_replace(data, previous[0]["lv"]):
+            return previous[1], False
+        ts = cache.put(IMPORT, LV_VER, key, {"zdroj": names[0], "subory": names, "lv": data})
+    return ts, True
 
 
 def _summary(ku: str, data: dict, files: list[str], ts: float) -> dict:
@@ -151,60 +196,80 @@ def register(mcp, app) -> None:
         preview), unreadable files are listed in varovania. Makes no network request. Results are kept in the
         local personal-data cache for 7 days (owner-only permissions on POSIX); kataster_osoba_prehlad reads them.
         """
-        env = Envelope()
-        try:
-            if sum(bool(x) for x in (path, paths, html)) != 1:
-                raise KatasterError("invalid_input", "Give exactly one of path, paths or html.")
-            if html:
-                items = [("inline html", html.encode("utf-8"))]
-            else:
-                files = [f for p in ([path] if path else paths) for f in _files(p)]
-                if not files:
-                    raise KatasterError("not_found", "No .html, .htm or .pdf files there.")
-                if len(files) > MAX_FILES:
-                    raise KatasterError("invalid_input", f"{len(files)} files; import at most {MAX_FILES} at once.")
-                items = []
-                for f in files:
-                    if f.stat().st_size > MAX_BYTES:
-                        if len(files) == 1:
-                            raise KatasterError("invalid_input", f"File too large ({f.stat().st_size} B).")
-                        env.warn(f"{f.name}: skipped, too large ({f.stat().st_size} B).")
-                        continue
-                    items.append((str(f), f.read_bytes()))
-            single = len(items) == 1 and not (path and Path(path).expanduser().is_dir()) and not paths
-            best: dict[tuple[str, str], tuple[dict, list[str]]] = {}
-            for origin, raw in items:
-                try:
-                    data = parse_page(raw)
-                except KatasterError as e:
-                    if single:
-                        raise
-                    env.warn(f"{Path(origin).name}: not read ({e.kind}: {e.message})")
+        return import_lv(app.osoby, path=path, paths=paths, html=html)
+
+
+def import_lv(cache: Cache, *, path: str | None = None, paths: list[str] | None = None,
+              html: str | None = None) -> dict:
+    """Shared local import service for MCP and CLI; does not start a server."""
+    env = Envelope()
+    try:
+        if sum(bool(x) for x in (path, paths, html)) != 1:
+            raise KatasterError("invalid_input", "Give exactly one of path, paths or html.")
+        if html:
+            if len(html.encode("utf-8")) > MAX_BYTES:
+                raise KatasterError("invalid_input", "HTML prekračuje limit importu.")
+            items = [("inline html", html.encode("utf-8"))]
+        else:
+            files = [f for p in ([path] if path else paths) for f in _files(p)]
+            if not files:
+                raise KatasterError("not_found", "No .html, .htm or .pdf files there.")
+            if len(files) > MAX_FILES:
+                raise KatasterError("invalid_input", f"{len(files)} files; import at most {MAX_FILES} at once.")
+            items = []
+            for f in files:
+                if f.stat().st_size > MAX_BYTES:
+                    if len(files) == 1:
+                        raise KatasterError("invalid_input", f"File too large ({f.stat().st_size} B).")
+                    env.warn(f"{f.name}: skipped, too large ({f.stat().st_size} B).")
                     continue
-                key = (ku_code(data["hlavicka"].get("Katastrálne územie", "")), data["lv"])
-                if key in best:
-                    old, names = best[key]
-                    names.append(origin)
-                    if _rank(data) > _rank(old):
-                        best[key] = (data, names)
+                items.append((str(f), f.read_bytes()))
+        single = len(items) == 1 and not (path and Path(path).expanduser().is_dir()) and not paths
+        best: dict[tuple[str, str], tuple[dict, list[str]]] = {}
+        for origin, raw in items:
+            try:
+                data = parse_page(raw)
+            except KatasterError as e:
+                if single:
+                    raise
+                env.warn(f"{Path(origin).name}: not read ({e.kind}: {e.message})")
+                continue
+            key = (ku_code(data["hlavicka"].get("Katastrálne územie", "")), data["lv"])
+            if key in best:
+                old, names = best[key]
+                if can_replace(data, old) and _rank(data) >= _rank(old):
+                    best[key] = (data, [origin, *names])
                 else:
-                    best[key] = (data, [origin])
-            out = []
-            for (ku, lv_no), (data, names) in best.items():
-                if data.get("stavby_neprecitane"):
-                    env.warn(f"LV {lv_no}: the extract lists buildings (stavby) that could not be read; "
-                             "the LV preview (Náhľad LV) of the same LV is read reliably.")
-                ts = app.osoby.put(IMPORT, LV_VER, f"{ku}|{lv_no}", {"zdroj": names[0], "subory": names, "lv": data})
-                env.source(IMPORT, names[0], oficialny=False, z_cache=False, cas=ts_iso(ts))
-                env.warn("Informative extract ('Výpis je nepoužiteľný na právne úkony'); data valid as of "
-                         + data["hlavicka"].get("Údaje platné k", "?") + ".")
-                out.append(_summary(ku, data, names, ts))
-            if single:
-                return env.ok(next(iter(best.values()))[0])
-            if not out:
-                raise KatasterError("invalid_input", "None of the files is a readable LV page or PDF.",
-                                    details=env.varovania)
-            return env.ok({"lv": sorted(out, key=lambda x: (x["ku_kod"], int(x["lv"]) if x["lv"].isdigit() else 0)),
-                           "pocet_lv": len(out), "pocet_suborov": len(items)})
-        except KatasterError as e:
-            raise env.fail(e) from e
+                    names.append(origin)
+            else:
+                best[key] = (data, [origin])
+        out = []
+        for (ku, lv_no), (data, names) in best.items():
+            if data.get("stavby_neprecitane"):
+                env.warn(f"LV {lv_no}: the extract lists buildings (stavby) that could not be read; "
+                         "the LV preview (Náhľad LV) of the same LV is read reliably.")
+            ts, saved = store_import(cache, data, names)
+            data["ulozenie"] = {"stav": "stored" if saved else "preserved_existing"}
+            if not saved:
+                env.warn(f"LV {lv_no}: import nenahradil uložený výpis pre starší/neznámy dátum alebo menší "
+                         "rozsah. Výsledok opisuje vstup; prehľad osôb naďalej používa predchádzajúci výpis. "
+                         "Zmenu rozsahu treba preveriť aj pri novšom dátume.")
+            if data.get("tarchy") == "unknown":
+                env.warn(f"LV {lv_no}: časť C chýba alebo nebola prečítaná; neprítomnosť tiarch nie je potvrdená.")
+            env.warn("Rozsah dokumentu nie je overený ako úplný; prečítané časti nedokazujú úplnosť výpisu.")
+            env.source(IMPORT, names[0], oficialny=False, z_cache=False)
+            env.warn("Informative extract ('Výpis je nepoužiteľný na právne úkony'); data valid as of "
+                     + data["hlavicka"].get("Údaje platné k", "?") + ".")
+            summary = _summary(ku, data, names, ts)
+            if not saved:
+                summary["importovane"] = None
+            out.append({**summary, "ulozenie": data["ulozenie"], "uplnost": data["uplnost"]})
+        if single:
+            return env.ok(next(iter(best.values()))[0])
+        if not out:
+            raise KatasterError("invalid_input", "None of the files is a readable LV page or PDF.",
+                                details=env.varovania)
+        return env.ok({"lv": sorted(out, key=lambda x: (x["ku_kod"], int(x["lv"]) if x["lv"].isdigit() else 0)),
+                       "pocet_lv": len(out), "pocet_suborov": len(items)})
+    except KatasterError as e:
+        raise env.fail(e) from e

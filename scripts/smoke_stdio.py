@@ -10,12 +10,12 @@ async def main(calls):
     params = StdioServerParameters(command="uv", args=["run", "kataster-mcp"])
     async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
         init = await s.initialize()
-        print("server:", init.serverInfo.name, init.serverInfo.version)
+        print("server:", init.server_info.name, init.server_info.version)
         print("tools:", [t.name for t in (await s.list_tools()).tools])
         for name, args in calls:
             res = await s.call_tool(name, json.loads(args))
             text = res.content[0].text if res.content else ""
-            print(f"--- {name} {args} isError={res.isError}\n{text[:1500]}")
+            print(f"--- {name} {args} isError={res.is_error}\n{text[:1500]}")
 
 if __name__ == "__main__":
     a = sys.argv[1:]

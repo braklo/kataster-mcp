@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from kataster_mcp.cache import POSIX
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from kataster_mcp.policy import PUBLIC_POLICY
 from kataster_mcp.server import create_server
