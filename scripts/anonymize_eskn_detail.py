@@ -18,7 +18,7 @@ def main(src, dst):
     page = open(src, encoding="utf8").read()
     start = page.index("Informácie o parcele")
     start = page.rfind('<div class="b_white">', 0, start)
-    end = page.index("Informácia", page.index("VLASTN", start))
+    end = page.index("Informácia", re.compile(r"<h3\b[^>]*>\s*vlastn", re.I).search(page, start).start())
     end = page.find("</main>", end)
     frag = page[start:end]
     originals = [m.group(1) for m in re.finditer(r"ucastnik-link[^>]*>(.*?)</a>", frag, re.S)]
