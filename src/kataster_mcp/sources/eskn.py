@@ -118,7 +118,8 @@ def parse_detail(page: str) -> dict:
     if "Informácie o parcele" not in page:
         raise ValueError("not a parcel detail page")
     info_start = page.index("Informácie o parcele")
-    owners_start = page.find("VLASTN", info_start)
+    owners_heading = re.compile(r"<h3\b[^>]*>\s*vlastn", re.I).search(page, info_start)
+    owners_start = owners_heading.start() if owners_heading else -1
     info = page[info_start: owners_start if owners_start > 0 else None].replace("<sup>2</sup>", "2")
     fields: dict = {}
     other: dict = {}

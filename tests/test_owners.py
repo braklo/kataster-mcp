@@ -50,8 +50,9 @@ def eskn_calls(calls):
     return [c for c in calls if c.startswith("kataster.skgeodesy.sk")]
 
 
-def test_parse_detail_fixture():
-    d = eskn.parse_detail(DETAIL)
+@pytest.mark.parametrize("heading", ["VLASTNÍK", "Vlastník", "vlastník"])
+def test_parse_detail_fixture(heading):
+    d = eskn.parse_detail(DETAIL.replace("VLASTNÍK", heading))
     assert d["lv"] == "1926" and d["vymera_m2"] == 1286
     assert d["druh_pozemku"] == "Trvalý trávny porast"
     assert [o["podiel"] for o in d["vlastnici"]] == ["1/2", "1/2"]
@@ -59,6 +60,7 @@ def test_parse_detail_fixture():
     assert (o["meno"], o["datum_narodenia"]) == ("Fiktívny Vlastník", "01.01.1900")
     assert o["adresa"].startswith("Testovacia 1/1")
     assert d["stav_k"] == "06.10.2026"
+    assert d["ostatne"] == {}
 
 
 def test_parse_identify_fixture():
