@@ -1,4 +1,5 @@
 import json
+import re
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,7 @@ FIX = Path(__file__).parent / "fixtures"
 E503 = json.loads((FIX / "wfs_e503.json").read_text(encoding="utf-8"))
 IDENT = json.loads((FIX / "eskn_identify_e503.json").read_text(encoding="utf-8"))
 DETAIL = (FIX / "eskn_detail_e_anon.html").read_text(encoding="utf8")
+DETAIL_C = (FIX / "eskn_detail_c_anon.html").read_text(encoding="utf8")
 EMPTY = {"type": "FeatureCollection", "features": []}
 
 
@@ -50,8 +52,9 @@ def eskn_calls(calls):
     return [c for c in calls if c.startswith("kataster.skgeodesy.sk")]
 
 
-def test_parse_detail_fixture():
-    d = eskn.parse_detail(DETAIL)
+@pytest.mark.parametrize("heading", ["VLASTNÍK", "Vlastník", "vlastník"])
+def test_parse_detail_fixture(heading):
+    d = eskn.parse_detail(DETAIL.replace("VLASTNÍK", heading))
     assert d["lv"] == "1926" and d["vymera_m2"] == 1286
     assert d["druh_pozemku"] == "Trvalý trávny porast"
     assert [o["podiel"] for o in d["vlastnici"]] == ["1/2", "1/2"]
@@ -59,6 +62,33 @@ def test_parse_detail_fixture():
     assert (o["meno"], o["datum_narodenia"]) == ("Fiktívny Vlastník", "01.01.1900")
     assert o["adresa"].startswith("Testovacia 1/1")
     assert d["stav_k"] == "06.10.2026"
+    assert d["ostatne"] == {}
+
+
+def test_parse_detail_c_fixture():
+    # register C page: 'Vlastník' heading, extra sections (protected property, buildings) before the owners
+    d = eskn.parse_detail(DETAIL_C)
+    assert d["lv"] == "179" and d["vymera_m2"] == 29415
+    assert [o["poradie"] for o in d["vlastnici"]] == [1, 2, 3, 4]
+    assert [o["podiel"] for o in d["vlastnici"]] == ["1/4"] * 4
+    assert d["vlastnici"][1]["meno"] == "Vymyslená Osoba r. Skúšobná"
+    assert set(d["ostatne"]) == {"Príslušnosť pozemku k pôdnemu fondu", "Spôsob využívania pozemku"}
+    assert d["stav_k"] == "14.10.2026"
+
+
+@pytest.mark.parametrize("page", [DETAIL, DETAIL_C], ids=["E", "C"])
+def test_parse_detail_unknown_owner_heading_is_drift(page):
+    # owners on the page but not parsed must never come back as an empty list
+    changed = re.sub(r"<h3>VLASTNÍK|<h3>Vlastník", "<h3>Účastníci", page)
+    assert changed != page
+    with pytest.raises(ValueError, match="owner links"):
+        eskn.parse_detail(changed)
+
+
+def test_parse_detail_without_owners_is_empty():
+    start = DETAIL.index("<ul>", DETAIL.index("VLASTNÍK"))
+    end = DETAIL.index("</ul>", start) + len("</ul>")
+    assert eskn.parse_detail(DETAIL[:start] + DETAIL[end:])["vlastnici"] == []
 
 
 def test_parse_identify_fixture():
@@ -133,3 +163,12 @@ async def test_failed_attempt_counts_and_snapshot_is_private(tmp_path):
     assert s.app_state.quota.used() == 1
     snaps = list((tmp_path / "snapshots").iterdir())
     assert len(snaps) == 1 and (not POSIX or stat.S_IMODE(snaps[0].stat().st_mode) == 0o600)
+
+
+@pytest.mark.anyio
+async def test_unparsed_owners_are_drift_not_cached(tmp_path):
+    calls = []
+    s = server(tmp_path, calls, detail=DETAIL.replace("<h3>VLASTNÍK", "<h3>Účastníci"))
+    with pytest.raises(ToolError, match="parser_drift"):
+        await s.call_tool("kataster_vlastnici", {"ku": "871541", "cislo": "E 503"})
+    assert s.app_state.osoby.stats() == {}  # no empty owner list cached as a valid answer

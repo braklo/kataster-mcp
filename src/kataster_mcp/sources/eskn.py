@@ -82,6 +82,8 @@ _OWNER = re.compile(
     r"<li[^>]*>\s*<span[^>]*>\s*<span[^>]*>\s*(\d+)\.\s*<a[^>]*ucastnik-link[^>]*>(.*?)</a>.*?Podiel:\s*([0-9]+\s*/\s*[0-9]+)",
     re.S,
 )
+_OWNERS_HEADING = re.compile(r"<h3\b[^>]*>\s*vlastn", re.I)
+_OWNER_LINK = re.compile(r"<a[^>]*ucastnik-link")
 _VALID = re.compile(r'title="Údaje platné k dátumu">\s*([0-9.]+)\s*<')
 _DATE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
@@ -118,7 +120,8 @@ def parse_detail(page: str) -> dict:
     if "Informácie o parcele" not in page:
         raise ValueError("not a parcel detail page")
     info_start = page.index("Informácie o parcele")
-    owners_start = page.find("VLASTN", info_start)
+    owners_heading = _OWNERS_HEADING.search(page, info_start)
+    owners_start = owners_heading.start() if owners_heading else -1
     info = page[info_start: owners_start if owners_start > 0 else None].replace("<sup>2</sup>", "2")
     fields: dict = {}
     other: dict = {}
@@ -138,6 +141,10 @@ def parse_detail(page: str) -> dict:
     if owners_start > 0:
         for order, person, share in _OWNER.findall(page[owners_start:]):
             owners.append({"poradie": int(order), **split_person(_text(person)), "podiel": share.replace(" ", "")})
+    links = len(_OWNER_LINK.findall(page, info_start))
+    if links > len(owners):
+        # Never report "no owners" when the page shows some: an empty list would be cached as a valid answer.
+        raise ValueError(f"page has {links} owner links but {len(owners)} owners were parsed")
     valid = _VALID.findall(page)
     return {
         **fields,
@@ -157,4 +164,4 @@ def parse_identify_safe(data: dict, register: str, number: str) -> dict:
 
 PARSERS_IDENTIFY = (parse_identify, _null)
 PARSERS_DETAIL = (parse_detail, split_person, _text)
-PARSER_DETAIL_REGEXES = (_LI.pattern, _OWNER.pattern, _VALID.pattern, _DATE.pattern, json.dumps(_LABELS, ensure_ascii=False))
+PARSER_DETAIL_REGEXES = (_LI.pattern, _OWNER.pattern, _OWNERS_HEADING.pattern, _OWNER_LINK.pattern, _VALID.pattern, _DATE.pattern, json.dumps(_LABELS, ensure_ascii=False))
