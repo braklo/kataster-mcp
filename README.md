@@ -144,3 +144,5 @@ vlastníkov ani výpisy z listu vlastníctva.
 ## Licencia
 
 Kód: [MIT](LICENSE). Licencia kódu sa nevzťahuje na údaje, ktoré server sprostredkúva.
+
+<!-- mcp-name: io.github.braklo/kataster-mcp -->
