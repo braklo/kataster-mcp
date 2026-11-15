@@ -48,8 +48,8 @@ Každá odpoveď uvádza zdroj, čas a to, či údaj prišiel z lokálnej cache.
 ## Inštalácia
 
 Potrebujete [uv](https://docs.astral.sh/uv/getting-started/installation/) (Linux, macOS aj Windows). Server sa spúšťa
-ako lokálny proces cez stdio, takže ho pridáte do každého MCP klienta rovnako: príkaz `uvx` s argumentmi
-`--from git+https://github.com/braklo/kataster-mcp kataster-mcp`. Väčšina klientov to zapisuje do JSON konfigurácie
+ako lokálny proces cez stdio, takže ho pridáte do každého MCP klienta rovnako: príkaz `uvx` s argumentom
+`kataster-mcp`. Väčšina klientov to zapisuje do JSON konfigurácie
 v tomto tvare (presné miesto a názov kľúča nájdete v dokumentácii svojho klienta):
 
 ```json
@@ -57,7 +57,7 @@ v tomto tvare (presné miesto a názov kľúča nájdete v dokumentácii svojho 
   "mcpServers": {
     "kataster": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/braklo/kataster-mcp", "kataster-mcp"]
+      "args": ["kataster-mcp"]
     }
   }
 }
@@ -66,15 +66,17 @@ v tomto tvare (presné miesto a názov kľúča nájdete v dokumentácii svojho 
 Napríklad v Claude Code jedným príkazom:
 
 ```bash
-claude mcp add kataster -- uvx --from git+https://github.com/braklo/kataster-mcp kataster-mcp
+claude mcp add kataster -- uvx kataster-mcp
 ```
+
+Vývojovú verziu priamo z GitHubu spustíte cez `uvx --from git+https://github.com/braklo/kataster-mcp kataster-mcp`.
 
 Potom sa stačí opýtať, napríklad: *„Čo je za pozemok E 503 v katastrálnom území Vyšný Kubín a kto ho vlastní?“*
 
 ## Príkazový riadok
 
-Balík obsahuje aj príkaz `sk-kataster`. Bez inštalácie ho spustíte cez
-`uvx --from git+https://github.com/braklo/kataster-mcp sk-kataster`, výstup je JSON.
+Balík obsahuje aj príkaz `sk-kataster`. Bez inštalácie ho spustíte cez `uvx --from kataster-mcp sk-kataster`,
+natrvalo ho nainštaluje `uv tool install kataster-mcp`. Výstup je JSON.
 
 ```bash
 sk-kataster doctor
