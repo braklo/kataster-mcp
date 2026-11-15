@@ -58,7 +58,7 @@ def test_time_zone_loads():
 
 @pytest.mark.anyio
 async def test_status_reports_real_data_dir(tmp_path):
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path / "data")
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path / "data", limits_dir=tmp_path / "limity")
     d = (await _call(s, "kataster_status", {}))["data"]
     assert d["data_dir"] == str((tmp_path / "data").resolve()) and Path(d["data_dir"]).is_absolute()
     assert d["platforma"] and d["ochrana_suborov"] == cache.protection()

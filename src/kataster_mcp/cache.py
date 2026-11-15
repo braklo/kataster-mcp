@@ -2,7 +2,10 @@
 
 Two files under the data dir (0700):
 - cache.sqlite  public data (geometry, layers)
-- osoby.sqlite  personal data (owners, land users) and the quota, always 0600
+- osoby.sqlite  personal data (owners, land users), always 0600
+and the state of the limits in a fixed per-user directory (default_limits_dir):
+- stav.sqlite   the daily owners quota and a portal block, 0600
+- tempo/        one file per host with the time of its last request (pacing.Pacer)
 
 Every entry is keyed by (source, parser version, key). The parser version is a hash
 of the parser's source code, so fixing a parser silently invalidates old entries.
@@ -41,6 +44,36 @@ def default_data_dir(platform: str | None = None, env: dict | None = None) -> Pa
     else:
         base = env.get("XDG_DATA_HOME") or os.path.join(Path.home(), ".local", "share")
     return Path(base) / "kataster-mcp"
+
+
+def configured_data_dir() -> Path:
+    """Data directory (cache, imports, snapshots): KATASTER_DATA_DIR when set, else default_data_dir().
+    It never moves the limits (default_limits_dir)."""
+    configured = os.environ.get("KATASTER_DATA_DIR")
+    return Path(configured).expanduser() if configured else default_data_dir()
+
+
+def default_limits_dir(platform: str | None = None) -> Path:
+    """Fixed per-user directory for the state of the limits (daily owners quota, pause across processes, portal
+    block). Unlike the data directory it follows no environment variable or configuration:
+    another data directory or XDG_DATA_HOME must not mean a new quota. Linux and others ~/.local/state/kataster-mcp,
+    macOS ~/Library/Application Support/kataster-mcp-limits, Windows <profile>\\AppData\\Local\\kataster-mcp-limits."""
+    platform = platform or sys.platform
+    home = _home()
+    if platform == "win32":
+        return home / "AppData" / "Local" / "kataster-mcp-limits"
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / "kataster-mcp-limits"
+    return home / ".local" / "state" / "kataster-mcp"
+
+
+def _home() -> Path:
+    """Home directory from the account database on POSIX (not $HOME), the user profile on Windows."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, AttributeError):
+        return Path.home()
 
 
 # os.open() on Windows opens the C runtime descriptor in text mode unless O_BINARY is given (0 on POSIX).
@@ -165,6 +198,22 @@ class Quota:
         self.db = db
         db.execute("CREATE TABLE IF NOT EXISTS kvota (den TEXT, parcela TEXT, PRIMARY KEY (den, parcela))")
         db.commit()
+
+    def merge_today(self, old: Path) -> int:
+        """Add today's rows of a quota kept elsewhere before (the data directory); the union is never laxer."""
+        if not old.exists():
+            return 0
+        src = sqlite3.connect(f"file:{old}?mode=ro", uri=True)
+        try:
+            rows = src.execute("SELECT den, parcela FROM kvota WHERE den=?", (today(),)).fetchall()
+        except sqlite3.OperationalError:  # no quota table there
+            rows = []
+        finally:
+            src.close()
+        before = self.used()
+        self.db.executemany("INSERT OR IGNORE INTO kvota VALUES (?, ?)", rows)
+        self.db.commit()
+        return self.used() - before
 
     def used(self, den: str | None = None) -> int:
         return self.db.execute("SELECT COUNT(*) FROM kvota WHERE den=?", (den or today(),)).fetchone()[0]

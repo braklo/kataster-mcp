@@ -138,7 +138,7 @@ async def test_vrstvy_new_layers_e503(tmp_path):
             return httpx.Response(200, json=ident)
         return _wms_handler(lambda w, h: [(w // 2, 0), (w // 2, h)], calls)(request)
 
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
     args = {"ku": "871541", "cislo": "E 503", "vrstvy": ["zastavane_uzemie", "tarchy"]}
     out = await _call(s, "kataster_vrstvy", args)
     v = out["data"]["vrstvy"]
@@ -161,7 +161,7 @@ async def test_vrstvy_point_default_skips_tarchy(tmp_path):
             return httpx.Response(200, text=GFI_V_ZU, headers={"content-type": XML})
         return httpx.Response(503)
 
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
     out = await _call(s, "kataster_vrstvy", {"lat": 49.1839, "lon": 19.3184})
     v = out["data"]["vrstvy"]
     assert "tarchy" not in v and v["zastavane_uzemie"]["v_zastavanom_uzemi"] is True

@@ -1,10 +1,12 @@
 """Sequential HTTP client with per-host pacing.
 
-All requests go through one lock, so the server never sends two requests at once.
-Pacing per host comes from Policy (ESKN portal: >= 3 s + jitter).
+All requests of a process go through one lock, so the server never sends two requests at once.
+Pacing per host comes from Policy (ESKN portal: >= 3 s + jitter). With a Pacer (the server always sets one)
+the pause also holds across processes, with one lock per host.
 """
 
 import asyncio
+import contextlib
 import random
 import time
 from urllib.parse import urlsplit
@@ -36,6 +38,7 @@ class Http:
         self._sleep = sleep
         self._clock = clock
         self.blocks = None  # Cache where a portal block is remembered across restarts (set by the server)
+        self.pacer = None  # Pacer: the same pause across processes (set by the server)
 
     def blocked_until(self, host: str = ESKN_HOST) -> float | None:
         """Epoch time until which requests to host are not sent (after a block or CAPTCHA), else None."""
@@ -68,42 +71,40 @@ class Http:
             )
         return self._client
 
-    async def _wait_turn(self, host: str) -> None:
+    async def _wait_turn(self, host: str, since_other: float | None) -> None:
+        """Wait out the pause after the last request to host: own (monotonic) or another process's (wall time)."""
         pause, jitter = self.policy.pause_for(host)
         last = self._last.get(host)
-        if last is not None:
-            wait = pause + random.uniform(0, jitter) - (self._clock() - last)
+        elapsed = [self._clock() - last] if last is not None else []
+        if since_other is not None:
+            elapsed.append(since_other)
+        if elapsed:
+            wait = pause + random.uniform(0, jitter) - min(elapsed)
             if wait > 0:
                 await self._sleep(wait)
 
-    async def get(self, url: str, params: dict | None = None) -> httpx.Response:
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         host = urlsplit(url).hostname or ""
         self.guard(host)
         async with self._lock:
-            await self._wait_turn(host)
-            try:
-                resp = await self.client.get(url, params=params)
-            except httpx.HTTPError as e:
-                raise KatasterError("unavailable", f"{host}: {type(e).__name__}: {e}") from e
-            finally:
-                self._last[host] = self._clock()
+            hold = self.pacer.hold(host) if self.pacer is not None else contextlib.nullcontext()
+            async with hold as since_other:
+                await self._wait_turn(host, since_other)
+                try:
+                    resp = await self.client.request(method, url, **kwargs)
+                except httpx.HTTPError as e:
+                    raise KatasterError("unavailable", f"{host}: {type(e).__name__}: {e}") from e
+                finally:
+                    self._last[host] = self._clock()
         self._check(resp, host)
         return resp
 
+    async def get(self, url: str, params: dict | None = None) -> httpx.Response:
+        return await self._request("GET", url, params=params)
+
     async def post(self, url: str, data: dict, headers: dict | None = None) -> httpx.Response:
         """Form POST under the same lock, pacing and block detection as get(); redirects are followed."""
-        host = urlsplit(url).hostname or ""
-        self.guard(host)
-        async with self._lock:
-            await self._wait_turn(host)
-            try:
-                resp = await self.client.post(url, data=data, headers=headers)
-            except httpx.HTTPError as e:
-                raise KatasterError("unavailable", f"{host}: {type(e).__name__}: {e}") from e
-            finally:
-                self._last[host] = self._clock()
-        self._check(resp, host)
-        return resp
+        return await self._request("POST", url, data=data, headers=headers)
 
     async def get_json(self, url: str, params: dict | None = None):
         resp = await self.get(url, params)
@@ -114,6 +115,8 @@ class Http:
             raise KatasterError("parser_drift", f"{resp.url.host}: expected JSON", details=snippet) from e
 
     async def aclose(self) -> None:
+        if self.pacer is not None:
+            self.pacer.close()
         if self._client is not None:
             await self._client.aclose()
 

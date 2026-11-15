@@ -23,6 +23,12 @@ OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 COLORS = [(230, 25, 75), (0, 130, 200), (255, 225, 25), (60, 180, 75), (245, 130, 48),
           (145, 30, 180), (70, 240, 240), (240, 50, 230)]
 MAX_SIDE = 1400
+# Sharp detail crops in the HTML map (issue #7): one per cluster of near parcels, over the overview image.
+DETAIL_CLUSTER_M = 250.0   # parcels whose joint extent fits in this many metres share one crop
+DETAIL_FINEST_M_PX = 0.05  # finer than the orthophoto is useful only for the cadastral map text
+DETAIL_GAIN = 2.0          # a crop is made only when it is at least this much sharper than the overview
+MAX_DETAILS = 8            # each crop costs one request per background source
+M_PER_DEG = 111320.0
 ATTRIBUTION = {
     "orto": "Ortofoto © ÚGKK SR (ZBGIS)",
     "kn": "Katastrálna mapa © ÚGKK SR",
@@ -33,7 +39,7 @@ ATTRIBUTION = {
 class Frame:
     """A lon/lat box mapped to pixels with true proportions at its latitude."""
 
-    def __init__(self, bounds, pad=0.15):
+    def __init__(self, bounds, pad=0.15, finest_m_px: float | None = None):
         minx, miny, maxx, maxy = bounds
         lat0 = (miny + maxy) / 2
         self.k = math.cos(math.radians(lat0))
@@ -44,7 +50,10 @@ class Frame:
         w, h = w * (1 + 2 * pad), h * (1 + 2 * pad)
         self.minx, self.maxx = cx - w / 2 / self.k, cx + w / 2 / self.k
         self.miny, self.maxy = cy - h / 2, cy + h / 2
-        scale = MAX_SIDE / max(w, h)
+        side_px = MAX_SIDE
+        if finest_m_px:
+            side_px = min(MAX_SIDE, max(256, math.ceil(max(w, h) * M_PER_DEG / finest_m_px)))
+        scale = side_px / max(w, h)
         self.width, self.height = round(w * scale), round(h * scale)
 
     def px(self, lon, lat):
@@ -54,7 +63,12 @@ class Frame:
 
     @property
     def metres_per_px(self) -> float:
-        return (self.maxx - self.minx) * self.k * 111320.0 / self.width
+        return (self.maxx - self.minx) * self.k * M_PER_DEG / self.width
+
+    @property
+    def bounds(self) -> list:
+        """Leaflet [[south, west], [north, east]]."""
+        return [[self.miny, self.minx], [self.maxy, self.maxx]]
 
     def wms_params(self, layers: str, fmt: str, transparent=False) -> dict:
         p = {"SERVICE": "WMS", "VERSION": "1.3.0", "REQUEST": "GetMap", "LAYERS": layers, "STYLES": "",
@@ -71,7 +85,7 @@ def _image(resp, what: str) -> Image.Image:
     return Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
 
-async def _osm(http, f: Frame) -> Image.Image:
+async def _osm(http, f: Frame, stats: dict) -> Image.Image:
     def tile_xy(lon, lat, z):
         n = 2 ** z
         x = (lon + 180) / 360 * n
@@ -89,25 +103,74 @@ async def _osm(http, f: Frame) -> Image.Image:
     for tx in range(int(x0), int(x1) + 1):
         for ty in range(int(y0), int(y1) + 1):
             resp = await http.get(OSM_TILES.format(z=z, x=tx, y=ty))
+            stats["osm_dlazdice"] = stats.get("osm_dlazdice", 0) + 1
+            if resp.headers.get("x-blocked"):  # OSM answers 200 with a placeholder tile when it refuses
+                raise KatasterError("unavailable", f"OpenStreetMap refused the tile: {resp.headers['x-blocked']}")
             canvas.paste(_image(resp, "OSM tile"), ((tx - int(x0)) * 256, (ty - int(y0)) * 256))
     box = ((x0 - int(x0)) * 256, (y0 - int(y0)) * 256, (x1 - int(x0)) * 256, (y1 - int(y0)) * 256)
     return canvas.crop(tuple(round(v) for v in box)).resize((f.width, f.height), Image.LANCZOS)
 
 
-async def background(http, f: Frame, podklad: str, env) -> Image.Image:
+async def background(http, f: Frame, podklad: str, env, stats: dict | None = None) -> Image.Image:
+    """Background image of the frame; stats counts the requests (wms_dotazy, osm_dlazdice)."""
+    stats = {} if stats is None else stats
     base = Image.new("RGBA", (f.width, f.height), (255, 255, 255, 255))
     if podklad in ("orto", "orto+kn"):
+        stats["wms_dotazy"] = stats.get("wms_dotazy", 0) + 1
         resp = await http.get(ORTO_URL, f.wms_params("1", "image/jpeg"))
         base = _image(resp, "ZBGIS orthophoto")
         env.source("zbgis_ortofoto", ORTO_URL, oficialny=True, z_cache=False)
     if podklad == "osm":
-        base = await _osm(http, f)
+        base = await _osm(http, f, stats)
         env.source("osm_tiles", OSM_TILES, oficialny=False, z_cache=False)
     if podklad in ("kn", "orto+kn"):
+        stats["wms_dotazy"] = stats.get("wms_dotazy", 0) + 1
         resp = await http.get(KN_URL, f.wms_params(KN_LAYERS, "image/png", transparent=True))
         base = Image.alpha_composite(base, _image(resp, "KN WMS"))
         env.source("ugkk_kn_wms", KN_URL, oficialny=True, z_cache=False)
     return base
+
+
+def clusters(shapes: list) -> list[list[int]]:
+    """Indexes of parcels grouped so that each group's extent fits in DETAIL_CLUSTER_M (greedy merging)."""
+    if not shapes:
+        return []
+    k = math.cos(math.radians(sum((s.bounds[1] + s.bounds[3]) / 2 for s in shapes) / len(shapes)))
+    groups = [([i], s.bounds) for i, s in enumerate(shapes)]
+
+    def extent(b):
+        return max((b[2] - b[0]) * k, b[3] - b[1]) * M_PER_DEG
+
+    def union(a, b):
+        return min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])
+
+    merged = True
+    while merged:
+        merged = False
+        best = None
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                e = extent(union(groups[i][1], groups[j][1]))
+                if e <= DETAIL_CLUSTER_M and (best is None or e < best[0]):
+                    best = (e, i, j)
+        if best:
+            _, i, j = best
+            groups[i] = (groups[i][0] + groups[j][0], union(groups[i][1], groups[j][1]))
+            del groups[j]
+            merged = True
+    return sorted(sorted(g) for g, _ in groups)
+
+
+def detail_frames(shapes: list, overview: Frame) -> list[tuple[list[int], Frame]]:
+    """Sharp crops for the HTML map: one per cluster, only where it is DETAIL_GAIN× sharper, at most MAX_DETAILS."""
+    out = []
+    for group in clusters(shapes):
+        b = [s.bounds for s in (shapes[i] for i in group)]
+        f = Frame((min(x[0] for x in b), min(x[1] for x in b), max(x[2] for x in b), max(x[3] for x in b)),
+                  pad=0.25, finest_m_px=DETAIL_FINEST_M_PX)
+        if overview.metres_per_px >= DETAIL_GAIN * f.metres_per_px:
+            out.append((group, f))
+    return out
 
 
 def _font(size: int):
@@ -197,15 +260,21 @@ def kml(parcels: list[dict], shapes: list) -> str:
             + "".join(marks) + "</Document></kml>\n")
 
 
-def html(parcels: list[dict], f: Frame, bg_jpeg: bytes | None, title: str, podklad: str) -> str:
+def html(parcels: list[dict], f: Frame, bg_jpeg: bytes | None, title: str, podklad: str,
+         details: list[tuple[Frame, bytes]] = ()) -> str:
+    """Leaflet map: the overview image of the whole frame and, above it, sharp crops (details) of parcel clusters.
+    All images are embedded, so nothing is loaded from the WMS by the browser (its certificate chain may not be
+    trusted there). OSM tiles are added only when the page is served over http(s): opened from a file, the browser
+    sends no Referer and OSM answers with a 'blocked' placeholder tile."""
     data = json.loads(geojson(parcels))
     for i, feat in enumerate(data["features"]):
         r, g, b = COLORS[i % len(COLORS)]
         feat["properties"]["_color"] = f"#{r:02x}{g:02x}{b:02x}"
     overlay = ""
-    if bg_jpeg is not None:
-        uri = "data:image/jpeg;base64," + base64.b64encode(bg_jpeg).decode()
-        overlay = (f"L.imageOverlay('{uri}', [[{f.miny},{f.minx}],[{f.maxy},{f.maxx}]]).addTo(map);")
+    images = ([(f, bg_jpeg)] if bg_jpeg is not None else []) + list(details)
+    for fr, jpg in images:
+        uri = "data:image/jpeg;base64," + base64.b64encode(jpg).decode()
+        overlay += f"L.imageOverlay('{uri}', {json.dumps(fr.bounds)}).addTo(map);\n"
     attrib = " · ".join(ATTRIBUTION[k] for k in ("orto", "kn", "osm") if k in podklad)
     return f"""<!doctype html>
 <html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -214,9 +283,13 @@ def html(parcels: list[dict], f: Frame, bg_jpeg: bytes | None, title: str, podkl
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>html,body,#map{{height:100%;margin:0}} .lbl{{background:#fff;border:0;font:600 13px sans-serif}}</style>
 </head><body><div id="map"></div><script>
-const map = L.map('map');
-L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom: 20, maxNativeZoom: 19,
-  attribution: '© OpenStreetMap contributors'}}).addTo(map);
+const map = L.map('map', {{maxZoom: 22}});
+if (location.protocol.startsWith('http')) {{
+  L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom: 22, maxNativeZoom: 19,
+    attribution: '© OpenStreetMap contributors'}}).addTo(map);
+}} else {{
+  map.setMaxBounds(L.latLngBounds({json.dumps(f.bounds)}).pad(0.1));
+}}
 {overlay}
 const data = {json.dumps(data, ensure_ascii=False)};
 const layer = L.geoJSON(data, {{

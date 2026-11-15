@@ -50,9 +50,24 @@ def share(text: str | None) -> Fraction | None:
 
 def fits(owner: dict, want: list[str], ico: str | None) -> bool:
     """Every query word is in the owner's name (any order; the maiden name after 'r.' counts), or the IČO matches."""
-    if ico:
-        return re.sub(r"\D", "", owner.get("ico") or "") == re.sub(r"\D", "", ico)
+    if ico is not None:
+        expected = norm_ico(ico)
+        actual = re.sub(r"\s", "", owner.get("ico") or "")
+        return actual == expected
     return bool(want) and set(want) <= set(tokens(owner.get("meno") or ""))
+
+
+def norm_ico(text: str | None) -> str | None:
+    """Eight ASCII digits with optional whitespace; empty or blank means no IČO (clients send "" for unset
+    optional fields); anything else is an error, missing digits are never invented."""
+    if text is None:
+        return None
+    value = re.sub(r"\s", "", text)
+    if not value:
+        return None
+    if not re.fullmatch(r"[0-9]{8}", value):
+        raise KatasterError("invalid_input", "IČO must be exactly eight digits (0-9).")
+    return value
 
 
 def imported(app) -> list[tuple[dict, float]]:
@@ -134,15 +149,19 @@ def register(mcp, app) -> None:
         The server never searches by person and makes no network request here: the user searches in the
         browser (the portal's invisible CAPTCHA lets a person through), opens the LV previews, saves them into
         one folder, then kataster_lv_import reads the folder and kataster_osoba_prehlad builds the overview.
+        The search is per k.ú., not per municipality: a town can have several k.ú. (ine_ku_obce) and a property
+        "in village X" can lie in a neighbouring village's k.ú.; repeat the guide for every k.ú. that matters.
         Walk the user through the steps ONE AT A TIME (wait until a step is done), do not paste the whole list.
         """
         env = Envelope()
         try:
+            ico = norm_ico(ico)
             unit = ku_mod.resolve(ku)
             env.source("eskn_vyhladavanie", navod.SEARCH_URL, oficialny=True, z_cache=False)
             return env.ok({
                 "ku": unit, "typ": typ,
                 "navod": navod.person(unit, typ, priezvisko, meno, nazov, ico),
+                "ine_ku_obce": navod.other_units(unit),
                 "poznamka": "The search result lists entries person × LV; namesakes are told apart by date of birth "
                             "and address (natural persons) or IČO (legal persons). CAPTCHA and any login are "
                             "handled by the user; this server does not call the portal for this.",
@@ -169,6 +188,7 @@ def register(mcp, app) -> None:
         """
         env = Envelope()
         try:
+            ico = norm_ico(ico)
             want = tokens(" ".join(x for x in (priezvisko, meno, nazov) if x))
             if not ico and len(want) < (1 if nazov else 2):
                 raise KatasterError("invalid_input", "Give the surname and first name, or the legal person's name or IČO.")

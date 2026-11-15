@@ -4,6 +4,7 @@ The extract is behind Google reCAPTCHA; the user opens it in a browser and solve
 (the server never bypasses CAPTCHA), saves the page and imports it with kataster_lv_import.
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlencode
@@ -12,7 +13,7 @@ from pydantic import Field
 
 from . import ku as ku_mod
 from . import navod
-from .cache import parser_version, ts_iso
+from .cache import PERSONAL_TTL, Cache, parser_version, ts_iso
 from .envelope import Envelope, KatasterError
 from .normalize import parcel_number
 from .parsers import lv as lv_parser
@@ -76,10 +77,84 @@ def _files(path: str) -> list[Path]:
 
 def _rank(data: dict) -> tuple:
     """Which of two copies of one LV wins: newer data date, then the extract over the preview."""
-    raw = data["hlavicka"].get("Údaje platné k", "")
-    d = raw.split(" ")[0].split(".")
-    date = tuple(int(x) for x in reversed(d)) if len(d) == 3 and all(x.isdigit() for x in d) else ()
+    raw = data["hlavicka"].get("Údaje platné k", "").strip()
+    date: tuple = ()
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y"):
+        try:
+            p = datetime.strptime(raw, fmt)
+            date = (p.year, p.month, p.day, p.hour, p.minute, p.second)
+            break
+        except ValueError:
+            continue
     return date, data.get("zdroj_typ") != "nahlad_lv"
+
+
+def _norm(text: str | None) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def lost(candidate: dict, previous: dict) -> dict[str, int]:
+    """What the candidate no longer has compared with the stored LV: owners (name, birth date, IČO),
+    parcels (register, number), buildings (súpisné číslo, parcel) and read parts. Counts only, no names."""
+    def owners(d: dict) -> set:
+        return {tuple(_norm(o.get(k)) for k in ("meno", "datum_narodenia", "ico")) for o in d["cast_b"]["vlastnici"]}
+
+    def rows(d: dict, key: str, fields: tuple[str, ...]) -> set:
+        return {tuple(r.get(k) for k in fields) for r in d.get(key) or []}
+
+    old_u, new_u = previous.get("uplnost") or {}, candidate.get("uplnost") or {}
+    out = {
+        "vlastnici": len(owners(previous) - owners(candidate)),
+        "parcely": len(rows(previous, "cast_a", ("register", "cislo")) - rows(candidate, "cast_a", ("register", "cislo"))),
+        "stavby": len(rows(previous, "stavby", ("supisne_cislo", "parcela"))
+                      - rows(candidate, "stavby", ("supisne_cislo", "parcela"))),
+        "casti": sum(old_u.get(p) == "read" and new_u.get(p) != "read" for p in ("cast_a", "cast_b", "cast_c")),
+    }
+    return {k: v for k, v in out.items() if v}
+
+
+def replace_decision(candidate: dict, previous: dict) -> tuple[bool, dict[str, int]]:
+    """Does the candidate replace the stored copy of the same LV?
+    A newer 'Údaje platné k' always wins (an owner may really have left: the loss is reported, not blocking);
+    an older or unknown date never replaces a dated copy; a partial extract never replaces a full one;
+    at the same date nothing may be lost (a truncated save) and the extract beats the preview."""
+    old_partial = (previous.get("uplnost") or {}).get("rozsah") == "partial"
+    if (candidate.get("uplnost") or {}).get("rozsah") == "partial" and not old_partial:
+        return False, {}
+    gone = lost(candidate, previous)
+    (new_date, new_kind), (old_date, old_kind) = _rank(candidate), _rank(previous)
+    if new_date != old_date:
+        return (bool(new_date) and new_date > old_date), gone
+    return (not gone and new_kind >= old_kind), gone
+
+
+def store_import(cache: Cache, data: dict, names: list[str]) -> tuple[float, bool, dict[str, int]]:
+    """Decide and write under one SQLite write lock; a rejected candidate keeps the stored row and its time."""
+    key = f"{ku_code(data['hlavicka'].get('Katastrálne územie', ''))}|{data['lv']}"
+    with cache.db:
+        cache.db.execute("BEGIN IMMEDIATE")
+        previous = cache.get(IMPORT, LV_VER, key, PERSONAL_TTL)
+        gone: dict[str, int] = {}
+        if previous:
+            ok, gone = replace_decision(data, previous[0]["lv"])
+            if not ok:
+                return previous[1], False, gone
+        ts = cache.put(IMPORT, LV_VER, key, {"zdroj": names[0], "subory": names, "lv": data})
+    return ts, True, gone
+
+
+def _coverage_warnings(env: Envelope, lv_no: str, data: dict) -> None:
+    """Say what the document does not prove: unknown encumbrances, missing parts, a partial extract."""
+    if data.get("tarchy") == "unknown":
+        env.warn(f"LV {lv_no}: part C (encumbrances) is missing or empty; absence of encumbrances is not confirmed.")
+    u = data.get("uplnost") or {}
+    missing = [p[-1].upper() for p in ("cast_a", "cast_b", "cast_c") if u.get(p) == "missing"]
+    if missing:
+        env.warn(f"LV {lv_no}: part(s) {', '.join(missing)} not in the document; it may be incomplete (truncated save).")
+    if data.get("jednotky_poznamka"):
+        env.warn(f"LV {lv_no}: {data['jednotky_poznamka']}")
+    elif u.get("rozsah") == "partial":
+        env.warn(f"LV {lv_no}: partial extract (čiastočný výpis): it lists only selected parcels.")
 
 
 def _summary(ku: str, data: dict, files: list[str], ts: float) -> dict:
@@ -88,7 +163,9 @@ def _summary(ku: str, data: dict, files: list[str], ts: float) -> dict:
         "ku_kod": ku, "lv": data["lv"], "zdroj_typ": data.get("zdroj_typ"), "subory": files,
         "udaje_platne_k": data["hlavicka"].get("Údaje platné k"), "parcely": len(data.get("cast_a") or []),
         "stavby": len(data.get("stavby") or []),
-        "vlastnici": len(b.get("vlastnici") or []), "importovane": ts_iso(ts),
+        **({"jednotky": data["jednotky_pocet"]} if data.get("jednotky_pocet") else {}),
+        "vlastnici": len(b.get("vlastnici") or []), "tarchy": data.get("tarchy"), "uplnost": data.get("uplnost"),
+        "importovane": ts_iso(ts),
     }
 
 
@@ -145,7 +222,9 @@ def register(mcp, app) -> None:
         One file: returns the parsed LV: header (district, municipality, k.ú., date of data), part A (parcels with
         area, land type, location; codes translated by the legend; buildings in `stavby` with súpisné číslo,
         the parcel under the building, kind and the LV of the land), part B (owners with shares, acquisition titles,
-        notes; administrators and tenants) and part C (encumbrances, ťarchy). zdroj_typ tells the input:
+        notes; administrators and tenants) and part C (encumbrances, ťarchy). A block of flats lists its units in
+        `jednotky` (flat or non-residential premises, entrance, floor, share of the common parts) and each owner
+        of a unit carries `jednotka`. zdroj_typ tells the input:
         vypis_lv_html, vypis_lv_pdf or nahlad_lv (the preview has no administrators/tenants section).
         A folder or several paths: a summary per LV (the same LV twice is merged: newer data, extract before
         preview), unreadable files are listed in varovania. Makes no network request. Results are kept in the
@@ -184,9 +263,10 @@ def register(mcp, app) -> None:
                 key = (ku_code(data["hlavicka"].get("Katastrálne územie", "")), data["lv"])
                 if key in best:
                     old, names = best[key]
-                    names.append(origin)
-                    if _rank(data) > _rank(old):
-                        best[key] = (data, names)
+                    if replace_decision(data, old)[0]:
+                        best[key] = (data, [origin, *names])  # names[0] is the stored document
+                    else:
+                        names.append(origin)
                 else:
                     best[key] = (data, [origin])
             out = []
@@ -194,11 +274,28 @@ def register(mcp, app) -> None:
                 if data.get("stavby_neprecitane"):
                     env.warn(f"LV {lv_no}: the extract lists buildings (stavby) that could not be read; "
                              "the LV preview (Náhľad LV) of the same LV is read reliably.")
-                ts = app.osoby.put(IMPORT, LV_VER, f"{ku}|{lv_no}", {"zdroj": names[0], "subory": names, "lv": data})
-                env.source(IMPORT, names[0], oficialny=False, z_cache=False, cas=ts_iso(ts))
+                ts, saved, gone = store_import(app.osoby, data, names)
+                data["ulozenie"] = {"stav": "stored" if saved else "preserved_existing"}
+                what = ", ".join(f"{n} {k}" for k, n in gone.items())
+                if saved:
+                    env.source(IMPORT, names[0], oficialny=False, z_cache=False, cas=ts_iso(ts))
+                    if gone:
+                        env.warn(f"LV {lv_no}: newer data replaced the stored copy; no longer listed: {what} "
+                                 "(a change of ownership, or check the document is complete).")
+                else:
+                    env.source(IMPORT, names[0], oficialny=False, z_cache=False)
+                    env.warn(f"LV {lv_no}: not stored; the stored copy is kept (older or unknown date, partial "
+                             "extract over a full one, or same date with less content"
+                             + (f": {what}" if what else "") + "). The result describes the input; "
+                             "kataster_osoba_prehlad keeps using the stored copy.")
+                _coverage_warnings(env, lv_no, data)
                 env.warn("Informative extract ('Výpis je nepoužiteľný na právne úkony'); data valid as of "
                          + data["hlavicka"].get("Údaje platné k", "?") + ".")
-                out.append(_summary(ku, data, names, ts))
+                summary = _summary(ku, data, names, ts)
+                summary["ulozenie"] = data["ulozenie"]
+                if not saved:
+                    summary["importovane"] = None
+                out.append(summary)
             if single:
                 return env.ok(next(iter(best.values()))[0])
             if not out:

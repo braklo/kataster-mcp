@@ -37,7 +37,9 @@ def register(mcp, app) -> None:
         """Draw parcels on a map and save files. Returns the file paths.
 
         PNG is rendered on the server (background from official WMS, outlines, labels, scale bar,
-        attribution). HTML is an interactive Leaflet map with the same background embedded.
+        attribution). HTML is an interactive Leaflet map with the same background embedded and, when the
+        parcels lie apart, a sharp crop (vyrezy) per cluster of near parcels above it, so zooming in stays
+        readable; each crop costs one request per background source (podklad_dotazy).
         GeoJSON/KML contain only geometry and public attributes (no owners).
         """
         env = Envelope()
@@ -54,15 +56,28 @@ def register(mcp, app) -> None:
             fmts = list(dict.fromkeys(format))
             files = {}
             bg = None
+            stats: dict = {}
+            details: list = []
+            crop_info: list = []
             if "png" in fmts or "html" in fmts:
-                bg = await render.background(app.http, frame, podklad, env)
+                bg = await render.background(app.http, frame, podklad, env, stats)
+            if "html" in fmts:
+                crops = render.detail_frames(shapes, frame)
+                if len(crops) > render.MAX_DETAILS:
+                    env.warn(f"{len(crops)} clusters of parcels; sharp crops made only for the first "
+                             f"{render.MAX_DETAILS}, the rest of the HTML map has the overview resolution.")
+                for group, f in crops[:render.MAX_DETAILS]:
+                    details.append((f, render.jpeg(await render.background(app.http, f, podklad, env, stats))))
+                    crop_info.append({"parcely": [f"{found[i]['register']} {found[i]['cislo']}" for i in group],
+                                      "mierka_m_na_px": round(f.metres_per_px, 3), "rozmer_px": [f.width, f.height]})
             title = ", ".join(f"{p['register']} {p['cislo']}" for p in found[:5]) + f" — {found[0].get('ku_nazov') or found[0]['ku_kod']}"
             for fmt in fmts:
                 path = directory / f"{base}.{fmt}"
                 if fmt == "png":
                     path.write_bytes(render.render_png(bg, frame, found, shapes, podklad, popisky))
                 elif fmt == "html":
-                    path.write_text(render.html(found, frame, render.jpeg(bg), title, podklad), encoding="utf-8")
+                    path.write_text(render.html(found, frame, render.jpeg(bg), title, podklad, details),
+                                    encoding="utf-8")
                 elif fmt == "geojson":
                     path.write_text(render.geojson(found), encoding="utf-8")
                 elif fmt == "kml":
@@ -74,6 +89,8 @@ def register(mcp, app) -> None:
                 "parcely": [f"{p['register']} {p['cislo']}" for p in found],
                 "rozmer_px": [frame.width, frame.height],
                 "mierka_m_na_px": round(frame.metres_per_px, 3),
+                "vyrezy": crop_info,
+                "podklad_dotazy": {"wms": stats.get("wms_dotazy", 0), "osm_dlazdice": stats.get("osm_dlazdice", 0)},
             })
         except KatasterError as e:
             raise env.fail(e) from e

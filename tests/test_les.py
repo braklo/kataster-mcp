@@ -65,7 +65,7 @@ async def test_vrstvy_les_two_requests(tmp_path):
             return httpx.Response(200, json={"results": []})
         return httpx.Response(503)
 
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
     out = await _call(s, "kataster_vrstvy", {"ku": "871541", "cislo": "E 503", "vrstvy": ["les"]})
     assert out["data"]["vrstvy"]["les"]["lesny_pozemok"] is False
     assert len(calls) == 2 and {z["id"]: z["oficialny"] for z in out["zdroje"]}["nlc_les"] is True

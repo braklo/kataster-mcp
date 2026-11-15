@@ -107,7 +107,7 @@ async def test_vrstvy_sklon_e503(tmp_path):
             return httpx.Response(200, text="@DMR 5.0 Stretch.Pixel Value; 543.13; ")
         return httpx.Response(503)
 
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
     out = await _call(s, "kataster_vrstvy", {"ku": "871541", "cislo": "E 503", "vrstvy": ["sklon"]})
     d = out["data"]["vrstvy"]["sklon"]
     assert calls == ["wcs", "gfi"]

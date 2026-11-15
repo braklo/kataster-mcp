@@ -33,6 +33,19 @@ def parcel(unit: dict | None, register: str | None, cislo: str | None) -> list[s
     ]
 
 
+def building_lv(unit: dict | None, register: str, cislo: str, house: str | None, lv_no: str | None) -> list[str]:
+    """Owners of the flats of a block of flats: the user opens the building's LV preview and imports it."""
+    return [
+        *parcel(unit, register, cislo)[:4],
+        f"V sekcii „Stavby“ klikni na stavbu (súpisné číslo {house or '?'}): otvorí sa detail stavby.",
+        f"Klikni na číslo LV stavby ({lv_no or '?'}): otvorí sa „Náhľad listu vlastníctva“ bytového domu so všetkými "
+        "bytmi, nebytovými priestormi, ich vlastníkmi a podielmi.",
+        CAPTCHA,
+        SAVE_PREVIEW,
+        "Zavolaj kataster_lv_import s cestou k uloženému súboru: byty vráti v `jednotky`, vlastníkov s `jednotka`.",
+    ]
+
+
 def lv(url: str) -> list[str]:
     """LV extract: preview vs. PDF extract vs. official extract."""
     return [
@@ -45,6 +58,26 @@ def lv(url: str) -> list[str]:
         "Ulož stránku: HTML výpis cez Ctrl+S → „Webová stránka, iba HTML“, PDF výpis ako súbor PDF.",
         "Zavolaj kataster_lv_import s cestou k súboru (alebo k priečinku, ak ich máš viac).",
     ]
+
+
+def other_units(unit: dict | None) -> list[dict]:
+    """Other k.ú. of the same municipality (a town can have several)."""
+    if not unit or not unit.get("obec_kod"):
+        return []
+    from .ku import table
+
+    return [{"kod": r["kod"], "nazov": r["nazov"]} for r in table()["_rows"]
+            if r["obec_kod"] == unit["obec_kod"] and r["kod"] != unit["kod"]]
+
+
+def municipality_vs_unit(unit: dict | None) -> str:
+    """Obec is not k.ú.: the search runs per k.ú., so repeat it for every k.ú. where the person may own something."""
+    others = other_units(unit)
+    town = (f" Obec {unit['obec']} má okrem zadaného ešte tieto k.ú.: "
+            + ", ".join(f"{o['nazov']} ({o['kod']})" for o in others) + ": hľadaj v každom." if others else "")
+    return ("Obec nie je to isté ako katastrálne územie (k.ú.): vyhľadávanie platí len pre zadané k.ú. Mesto môže mať "
+            "viac k.ú. a nehnuteľnosť „v obci X“ môže ležať v k.ú. susednej obce." + town
+            + " Hľadanie zopakuj pre každé k.ú., kde osoba môže niečo mať (k.ú. nájde kataster_ku).")
 
 
 def person(unit: dict | None, typ: str, priezvisko: str | None, meno: str | None,
@@ -76,5 +109,6 @@ def person(unit: dict | None, typ: str, priezvisko: str | None, meno: str | None
         "Klikni na číslo LV: otvorí sa „Náhľad listu vlastníctva“.",
         SAVE_PREVIEW,
         "Vráť sa na zoznam a zopakuj to pre ďalšie riadky (každý LV stačí uložiť raz).",
+        municipality_vs_unit(unit),
         "Zavolaj kataster_lv_import s cestou k priečinku a potom kataster_osoba_prehlad.",
     ]

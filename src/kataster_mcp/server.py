@@ -4,6 +4,7 @@
 The public entry point `main()` always uses PUBLIC_POLICY.
 """
 
+import json
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -11,15 +12,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from . import __version__, ku as ku_mod
-from .cache import DAY, PERSONAL_TTL, Cache, Quota, default_data_dir, parser_version, protection, purge_files, today, ts_iso
+from .cache import DAY, PERSONAL_TTL, Cache, Quota, configured_data_dir, default_data_dir, default_limits_dir, parser_version, protection, purge_files, today, ts_iso
 from .envelope import Envelope, KatasterError
-from .http import Http
+from .http import BLOCK_PAUSE_S, BLOCK_SOURCE, Http
+from .pacing import Pacer
 from .normalize import parcel_number
-from .policy import PUBLIC_POLICY, Policy
+from .policy import ESKN_HOST, PUBLIC_POLICY, Policy
 from .sources import wfs
 from . import lv, mapa, osoba, owners, skupina, vrstvy
 
@@ -47,26 +49,37 @@ class App:
     osoby: Cache
     quota: Quota
     data_dir: Path
+    limits_dir: Path
 
 
-ExtraTool = Callable[[FastMCP, App], None]
+ExtraTool = Callable[[MCPServer, App], None]
 
 
 def create_server(policy: Policy = PUBLIC_POLICY, extra_tools: Iterable[ExtraTool] = (),
-                  *, data_dir: Path | None = None, http: Http | None = None) -> FastMCP:
+                  *, data_dir: Path | None = None, limits_dir: Path | None = None,
+                  http: Http | None = None) -> MCPServer:
+    """data_dir: cache, imports, snapshots (movable). limits_dir: quota, pause and block state, by default the fixed
+    per-user directory that no environment variable changes; only code (tests) passes another one."""
     data_dir = data_dir or default_data_dir()
+    limits_dir = limits_dir or default_limits_dir()
     osoby = Cache(data_dir / "osoby.sqlite", private=True, max_age_s=PERSONAL_TTL)
     purge_files(data_dir / "snapshots", PERSONAL_TTL)
+    state = Cache(limits_dir / "stav.sqlite", private=True)
+    quota = Quota(state.db)
+    quota.merge_today(data_dir / "osoby.sqlite")  # the quota used to live there: today's count carries over
     app = App(
         policy=policy,
         http=http or Http(policy),
         cache=Cache(data_dir / "cache.sqlite", private=False),
         osoby=osoby,
-        quota=Quota(osoby.db),
+        quota=quota,
         data_dir=data_dir,
+        limits_dir=limits_dir,
     )
-    app.http.blocks = app.cache
-    mcp = FastMCP("kataster", instructions=INSTRUCTIONS)
+    _carry_block(app.cache, state)
+    app.http.blocks = state
+    app.http.pacer = Pacer(limits_dir / "tempo")  # always, also behind an extension's own Http
+    mcp = MCPServer("kataster", instructions=INSTRUCTIONS, version=__version__)
     _register_core(mcp, app)
     for register in extra_tools:
         register(mcp, app)
@@ -120,7 +133,7 @@ async def find_parcel(app: App, env: Envelope, ku: str, cislo: str, register: st
     return found[0]
 
 
-def _register_core(mcp: FastMCP, app: App) -> None:
+def _register_core(mcp: MCPServer, app: App) -> None:
     owners.register(mcp, app)
     vrstvy.register(mcp, app)
     skupina.register(mcp, app)
@@ -206,9 +219,21 @@ def _register_core(mcp: FastMCP, app: App) -> None:
             "ciselnik_ku": {"pocet": t["pocet"], "stiahnute": t["stiahnute"]},
             "verzie_parserov": {wfs.SOURCE_ID: WFS_VER, **owners.parser_versions(), **vrstvy.VERSIONS},
             "data_dir": str(app.data_dir.resolve()),
+            "limity_dir": str(app.limits_dir.resolve()),
             "platforma": sys.platform,
             "ochrana_suborov": protection(),
         })
+
+
+def _carry_block(old: Cache, state: Cache) -> None:
+    """A portal block remembered in the data directory (before the fixed limits directory) still holds."""
+    hit = old.get(BLOCK_SOURCE, "1", ESKN_HOST, BLOCK_PAUSE_S)
+    now = state.get(BLOCK_SOURCE, "1", ESKN_HOST, BLOCK_PAUSE_S)
+    if hit is not None and (now is None or now[1] < hit[1]):  # the later block lasts longer
+        data, ts = hit
+        state.db.execute("INSERT OR REPLACE INTO cache VALUES (?, ?, ?, ?, ?)",
+                         (BLOCK_SOURCE, "1", ESKN_HOST, ts, json.dumps(data, ensure_ascii=False)))
+        state.db.commit()
 
 
 def _with_ku(p: dict) -> dict:
@@ -217,7 +242,7 @@ def _with_ku(p: dict) -> dict:
 
 
 def main() -> None:
-    create_server(PUBLIC_POLICY).run()
+    create_server(PUBLIC_POLICY, data_dir=configured_data_dir()).run()
 
 
 if __name__ == "__main__":

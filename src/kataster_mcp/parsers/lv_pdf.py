@@ -26,6 +26,12 @@ _LABELS = ("Titul nadobudnutia:", "Iné údaje:", "Poznámky:", "Poznámka:")
 _STARTS = ("Titul nadobudnutia", "Iné údaje", "Poznámk", "Správca", "Nájomca", "Iná oprávnená osoba", "ČASŤ")
 _PAGE_NO = re.compile(r"^\d+\s+(z|/|of)(\s+\d+)?$")  # "1 z", "1 / 3"; never "518/1" or a share "1/2"
 _DROP = re.compile(r"^(Strana|Str\.)\s*\d+(\s*(/|z)\s*\d+)?$")
+# Unit header of a block of flats (portal PDF 2026-11): a line of labels, the values below each label (by x), label
+# texts wrapped onto the value lines; a second label line (house number ...) follows, sometimes before the last value.
+_UNIT_LABELS = ("Vchod (číslo)", "Poschodie", "Číslo bytu", "Číslo nebytového", "Podiel priestoru",
+                "Súpisné číslo", "Miestna časť", "Druh nebytového")
+_UNIT_ROW2 = ("Súpisné číslo", "Miestna časť", "Druh nebytového")
+_UNIT_LABEL_TAILS = {"priestoru", "častiach a spoločných zariadeniach", "domu, na príslušenstve"}
 
 
 def pdf_runs(data: bytes) -> list[dict]:
@@ -89,6 +95,36 @@ def _place(line: list[dict], cols: list[tuple[float, str]]) -> list[str]:
     return cells
 
 
+def unit_rows(block: list[list[dict]]) -> list[list[str]]:
+    """Lines of one unit header -> the two rows of 'label + newline + value' cells the HTML extract gives.
+    A value belongs to the latest label above it (in reading order) that starts at the same x."""
+    cols: list[dict] = []
+    for ln in block:
+        for r in ln:
+            if r["t"].startswith(_UNIT_LABELS):
+                cols.append({"x": r["x"], "label": [r["t"]], "values": [], "row2": r["t"].startswith(_UNIT_ROW2)})
+                continue
+            col = next((c for c in reversed(cols) if abs(c["x"] - r["x"]) <= COL_TOL), None)
+            if col is not None:
+                (col["label"] if r["t"] in _UNIT_LABEL_TAILS else col["values"]).append(r["t"])
+    return [[" ".join(c["label"]) + "\n" + " ".join(c["values"]) for c in cols if c["row2"] == second]
+            for second in (False, True)]
+
+
+def _split_building_kind(cells: list[str], cols: list[tuple[float, str]]) -> list[str]:
+    """Buildings table of the portal PDF (LV 4127, 2026-11): the description starts right after the kind code, left
+    of its centred header, so both land in the kind column ("9 bytový dom") and the description stays empty.
+    The HTML extract has them apart (kind "9", description "bytový dom"); split them the same way."""
+    titles = [" ".join(t.split()) for _, t in cols]
+    if "Druh stavby" not in titles or "Popis stavby" not in titles:
+        return cells
+    kind, desc = titles.index("Druh stavby"), titles.index("Popis stavby")
+    m = re.match(r"^(\d+)\s+(\S.*)$", cells[kind])
+    if m and not cells[desc]:
+        cells[kind], cells[desc] = m.group(1), m.group(2)
+    return cells
+
+
 def rows_from_runs(runs: list[dict]) -> list[list[str]]:
     lines = _lines(runs)
     rows: list[list[str]] = []
@@ -125,9 +161,17 @@ def rows_from_runs(runs: list[dict]) -> list[list[str]]:
                     band.append(ln)
                     continue
             if cols and lv_html._PARCEL_NO.match(cells[0]):
-                rows.append(_place(ln, cols))
+                rows.append(_split_building_kind(_place(ln, cols), cols))
                 continue
         if section == "B":
+            if cells[0].startswith("Vchod (číslo)"):  # unit header of a block of flats, up to 'Iné údaje'
+                block = [ln]
+                while i < len(lines) and len(block) < 20 and not " ".join(r["t"] for r in lines[i]).startswith(_STARTS):
+                    block.append(lines[i])
+                    i += 1
+                rows.extend(unit_rows(block))
+                owner = None
+                continue
             if _SHARE.match(cells[-1]) and len(cells) >= 2:
                 lead = cells[0] if cells[0].isdigit() and len(cells) >= 3 else ""
                 owner = [lead, " ".join(cells[1:-1] if lead else cells[:-1]), cells[-1].replace(" ", "")]
@@ -172,7 +216,8 @@ def _number_owners(rows: list[list[str]]) -> int:
 
 def _starts_new(ln: list[dict]) -> bool:
     text = " ".join(r["t"] for r in ln)
-    return text.startswith(_STARTS) or bool(_SHARE.match(ln[-1]["t"]))
+    # an owner line has the share in its own run after the name; a lone "123/45" is wrapped text (e.g. a deed number)
+    return text.startswith(_STARTS) or (len(ln) >= 2 and bool(_SHARE.match(ln[-1]["t"])))
 
 
 def parse_runs(runs: list[dict]) -> dict:
@@ -198,4 +243,4 @@ def parse_lv_pdf(data: bytes) -> dict:
     return parse_runs(runs)
 
 
-PARSERS = (parse_lv_pdf, parse_runs, pdf_runs, rows_from_runs, _number_owners, _lines, _columns, _place, _starts_new)
+PARSERS = (parse_lv_pdf, parse_runs, pdf_runs, rows_from_runs, unit_rows, _split_building_kind, _number_owners, _lines, _columns, _place, _starts_new)

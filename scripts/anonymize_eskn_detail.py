@@ -1,5 +1,5 @@
-"""Make a test fixture from a saved ESKN parcel detail page: keep the parcel and owner
-sections, replace every owner with a fictitious person and drop session tokens.
+"""Make a test fixture from a saved ESKN parcel or building (detail_st) page: keep the parcel or building,
+parcel/building lists and owner sections, replace every owner with a fictitious person and every house number with 1, drop session tokens.
 
     uv run python scripts/anonymize_eskn_detail.py <saved.html> tests/fixtures/<name>.html
 
@@ -16,9 +16,11 @@ FAKE = [
 
 def main(src, dst):
     page = open(src, encoding="utf8").read()
-    start = page.index("Informácie o parcele")
+    first = "Informácie o stavbe" if "Informácie o stavbe" in page else "Informácie o parcele"  # building or parcel
+    start = page.index(first)
     start = page.rfind('<div class="b_white">', 0, start)
-    end = page.index("Informácia", page.index("VLASTN", start))
+    owners = re.compile(r"<h3[^>]*>\s*vlastn", re.I).search(page, start)  # was "VLASTNÍK", now "Vlastník"
+    end = page.index("Informácia", owners.start())
     end = page.find("</main>", end)
     frag = page[start:end]
     originals = [m.group(1) for m in re.finditer(r"ucastnik-link[^>]*>(.*?)</a>", frag, re.S)]
@@ -32,6 +34,7 @@ def main(src, dst):
 
     frag = re.sub(r"(ucastnik-link[^>]*>)(.*?)(</a>)", repl, frag, flags=re.S)
     frag = re.sub(r"token=[0-9a-f-]+", "token=REMOVED", frag)
+    frag = re.sub(r"(Súpisné číslo:\s*)\S+?(<)", r"\g<1>1\2", frag)  # house number -> fictitious
     for o in originals:
         name = re.sub(r"\s+", " ", o).strip().split(",")[0]
         if name and name in frag:

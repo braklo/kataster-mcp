@@ -81,7 +81,7 @@ async def test_vrstvy_pozemkove_upravy_e503_and_dataset_cache(tmp_path):
             return httpx.Response(200, content=_raw(dist_id), headers={"content-type": "text/csv"})
         return httpx.Response(503)
 
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
     out = await _call(s, "kataster_vrstvy", {"ku": "871541", "cislo": "E 503", "vrstvy": ["pozemkove_upravy"]})
     d = out["data"]["vrstvy"]["pozemkove_upravy"]
     assert d["ku_kod"] == "871541" and d["prebiehaju"] is True

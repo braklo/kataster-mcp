@@ -26,7 +26,7 @@ def anyio_backend():
 def _offline(tmp_path):
     def handler(req):
         raise AssertionError(f"no network expected: {req.url}")
-    return create_server(PUBLIC_POLICY, data_dir=tmp_path / "data", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    return create_server(PUBLIC_POLICY, data_dir=tmp_path / "data", limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
 
 
 async def _err(s, name, args):
@@ -132,6 +132,26 @@ async def test_overview_legal_person_by_ico(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("ico", ["abc", "123", "12345678x", "１２３４５６７８"])
+async def test_invalid_ico_is_rejected(tmp_path, ico):
+    # "abc" used to lose all its characters to \D and match every owner without an IČO
+    s = _offline(tmp_path)
+    await _call(s, "kataster_lv_import", {"path": str(FIX / "lv_vypis_anon.html")})
+    for tool, args in (("kataster_osoba_prehlad", {"ico": ico, "nazov": "Test"}),
+                       ("kataster_osoba_navod", {"ku": "871541", "typ": "pravnicka", "ico": ico})):
+        assert (await _err(s, tool, args))["typ"] == "invalid_input"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ico", ["", "   "])
+async def test_blank_ico_means_no_ico(tmp_path, ico):
+    s = _offline(tmp_path)
+    assert (await _err(s, "kataster_osoba_prehlad", {"ico": ico, "priezvisko": "Vlastník"}))["typ"] == "invalid_input"
+    out = await _call(s, "kataster_osoba_prehlad", {"ico": ico, "nazov": "Test"})
+    assert out["data"] is not None
+
+
+@pytest.mark.anyio
 async def test_overview_needs_a_name(tmp_path):
     s = _offline(tmp_path)
     assert (await _err(s, "kataster_osoba_prehlad", {"priezvisko": "Vlastník"}))["typ"] == "invalid_input"
@@ -158,7 +178,7 @@ def _portal(tmp_path, detail_page, calls):
             return httpx.Response(200, json=ident)
         return httpx.Response(200, text=detail_page, headers={"content-type": "text/html"})
 
-    return create_server(PUBLIC_POLICY, data_dir=tmp_path / "data", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
+    return create_server(PUBLIC_POLICY, data_dir=tmp_path / "data", limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, handler, FakeTime()))
 
 
 @pytest.mark.anyio
@@ -230,3 +250,34 @@ def test_buildings_in_extract_rows():
                               "pravny_vztah_k_pozemku": rows[-6][1]}]
     odd = parse_rows(base + [["Stavby"], ["Súpisné č.", "na parc. č."], ["45 12/3"], ["ČASŤ B"]])
     assert odd["stavby"] == [] and odd["stavby_neprecitane"]
+
+
+@pytest.mark.anyio
+async def test_person_guide_says_municipality_is_not_ku(tmp_path):
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity")
+    town = (await _call(s, "kataster_osoba_navod", {"ku": "812315", "priezvisko": "Vlastník"}))["data"]  # Dolný Kubín
+    others = {o["kod"] for o in town["ine_ku_obce"]}
+    assert "812331" in others and "812315" not in others  # Veľký Bysterec is part of the town
+    step = next(x for x in town["navod"] if x.startswith("Obec nie je to isté"))
+    assert "Veľký Bysterec (812331)" in step and "susednej obce" in step
+    village = (await _call(s, "kataster_osoba_navod", {"ku": "871541", "priezvisko": "Vlastník"}))["data"]
+    assert village["ine_ku_obce"] == [] and any("susednej obce" in x for x in village["navod"])
+
+
+def test_building_code_cell_with_tooltip_is_not_glued():
+    # the live LV preview carries a tooltip in the code cell ("9", "Druh stavby", "9 Bytový dom"); seen 2026-11
+    from kataster_mcp.parsers import nahlad
+    from kataster_mcp.parsers.lv import _coded_cell
+
+    page = (FIX / "lv_nahlad_stavba_anon.html").read_text(encoding="utf8")
+    cell = '<span id="j_idt307:0:stavby-druhStavby">10</span></strong>'
+    assert cell in page
+    plain = nahlad.parse_nahlad(page)["stavby"][0]
+    tooltip = nahlad.parse_nahlad(page.replace(
+        cell, cell + '<div class="ui-tooltip"><strong>Druh stavby</strong><br/>10 Rodinný dom</div>'))["stavby"][0]
+    assert plain["druh_stavby"] == tooltip["druh_stavby"] == "Rodinný dom"
+    assert plain["umiestnenie_stavby"] == "Stavba postavená na zemskom povrchu"
+    assert _coded_cell("9\nDruh stavby\n9 Bytový dom") == "Bytový dom"
+    assert _coded_cell("1\nUmiestnenie stavby\n1 Stavba postavená na zemskom povrchu") == \
+        "Stavba postavená na zemskom povrchu"
+    assert _coded_cell("10") == "10" and _coded_cell("10\nDruh stavby") == "10"

@@ -59,7 +59,7 @@ def test_rejects_non_pdf_and_textless():
 async def test_import_tool_accepts_pdf(tmp_path):
     f = tmp_path / "vypis.pdf"
     f.write_bytes(PDF)
-    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, http=_mock_http(PUBLIC_POLICY, lambda r: None, FakeTime()))
+    s = create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity", http=_mock_http(PUBLIC_POLICY, lambda r: None, FakeTime()))
     out = await _call(s, "kataster_lv_import", {"path": str(f)})
     assert out["data"]["zdroj_typ"] == "vypis_lv_pdf" and out["data"]["lv"] == "1926"
     assert out["zdroje"][0]["id"] == "lv_import"

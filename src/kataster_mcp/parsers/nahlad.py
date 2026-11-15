@@ -8,7 +8,19 @@ Output has the same shape as parsers.lv.parse_lv so kataster_lv_import treats bo
 import html as htmllib
 import re
 
-from .lv import _BUILDING_LEGEND, _HEADER_KEYS, buildings, rows_of, split_person, translate
+from .lv import (
+    _BUILDING_LEGEND,
+    _HEADER_KEYS,
+    _coded_cell,
+    buildings,
+    coverage,
+    rows_of,
+    split_person,
+    translate,
+    unit_fields,
+    unit_header,
+    units_summary,
+)
 
 _TOOLTIP = re.compile(
     r'<div class="m-bottom-xs">\s*([^<]+?)\s*</div>\s*<div class="display-table">\s*'
@@ -73,9 +85,16 @@ def parse_nahlad(page: str) -> dict:
                 cast_a.append(row)
 
     owners = []
-    for cells in rows_of(_section(page, "cast-b", "cast-c")):
+    units: list[dict] = []
+    part_b = _section(page, "cast-b", "cast-c")
+    for cells in rows_of(part_b):
         nonempty = [c for c in cells if c]
+        unit = unit_header(cells)
+        if unit is not None:
+            units.append({**unit, "vlastnici_pocet": 0})
+            continue
         if len(nonempty) >= 3 and re.search(r"(?m)^\d+\.$", nonempty[0]):
+            before = len(owners)
             order = int(nonempty[0].splitlines()[-1].rstrip("."))
             lines = nonempty[1].splitlines()[1:] or [nonempty[1]]
             share = nonempty[2].splitlines()[-1].replace(" ", "")
@@ -83,11 +102,17 @@ def parse_nahlad(page: str) -> dict:
                 owners += [{"poradie": order, **split_person(ln), "podiel": share, "bsm": True} for ln in lines[1:]]
             else:
                 owners.append({"poradie": order, **split_person(", ".join(lines)), "podiel": share})
+            if units:  # owners of the last unit header (a share of the unit, not of the building)
+                ref = {k: units[-1].get(k) for k in ("druh", "vchod", "cislo")}
+                for owner in owners[before:]:
+                    owner["jednotka"] = ref
+                units[-1]["vlastnici_pocet"] += len(owners) - before
         elif nonempty and nonempty[0].startswith("Titul nadobudnutia") and owners:
             owners[-1]["titul_nadobudnutia"] = " ".join(nonempty[0].splitlines()[1:])
     cast_c = [" ".join(c for c in cells if c) for cells in rows_of(_section(page, "cast-c", None).split("</table>")[0])]
     cast_c = [t for t in cast_c if t]
-    return {
+    present = {s.upper() for s in ("a", "b", "c") if f'class="cast-{s}"' in page}
+    result = {
         "zdroj_typ": "nahlad_lv",
         "lv": m.group(1),
         "hlavicka": head,
@@ -96,9 +121,30 @@ def parse_nahlad(page: str) -> dict:
         "cast_b": {"vlastnici": owners, "ine_opravnene_osoby": []},
         "cast_c": cast_c,
         "legenda": legend,
-        "tarchy": "none" if not cast_c else "see cast_c",
+        "tarchy": encumbrances_preview(cast_c, "C" in present),
         "poznamka": "LV preview from the ESKN portal: no administrators/tenants section; encumbrances as shown on the page.",
     }
+    if result["tarchy"] == "none":
+        result["tarchy_poznamka"] = ("Per the LV preview: part C is present with an empty table. The preview never "
+                                     "writes 'Bez tiarch.'; only the extract (výpis z LV) states it explicitly.")
+    partial = False
+    if units or "table-byt-data" in part_b:
+        tables = part_b.count("table-byt-data")
+        if tables != len(units):
+            raise ValueError(f"LV preview: {tables} unit tables but {len(units)} units parsed")
+        paged = "ui-paginator" in part_b or "Zobraziť viac" in part_b
+        partial = units_summary(result, units, _text(part_b), paged)
+    result["uplnost"] = coverage(result, present, partial=partial)
+    return result
 
 
-PARSERS = (parse_nahlad, _text, _section)
+def encumbrances_preview(lines: list[str], present: bool) -> str:
+    """Preview: a present part C with an empty table means no encumbrances as shown by the portal
+    (verified on a preview without and one with encumbrances); a missing part C is unknown."""
+    if not present:
+        return "unknown"
+    return "see cast_c" if lines else "none"
+
+
+PARSERS = (parse_nahlad, unit_header, unit_fields, units_summary, _text, _section, encumbrances_preview, buildings, _coded_cell, coverage, rows_of,
+           split_person, translate)

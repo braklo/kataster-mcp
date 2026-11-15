@@ -70,6 +70,6 @@ def test_server_start_purges_osoby_and_snapshots(tmp_path):
     t = time.time() - PERSONAL_TTL - 60
     os.utime(old, (t, t))
 
-    create_server(PUBLIC_POLICY, data_dir=tmp_path)
+    create_server(PUBLIC_POLICY, data_dir=tmp_path, limits_dir=tmp_path / "limity")
     assert _raw_rows(tmp_path / "osoby.sqlite") == []
     assert not old.exists() and new.exists()
