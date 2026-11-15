@@ -2,7 +2,6 @@
 import asyncio
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -110,7 +109,7 @@ def test_one_host_does_not_hold_up_another(tmp_path):
 def test_killed_process_does_not_block_others(tmp_path):
     holder, _ = spawn(tmp_path, "holder", "hold")
     wait_for(tmp_path / "holder.log.held")
-    holder.send_signal(signal.SIGKILL)
+    holder.kill()  # SIGKILL on POSIX, TerminateProcess on Windows: no cleanup in the dying process
     holder.wait(10)
     t0 = time.time()
     other, log = spawn(tmp_path, "other", "kataster.skgeodesy.sk")

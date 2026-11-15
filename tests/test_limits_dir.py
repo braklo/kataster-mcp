@@ -29,19 +29,23 @@ def test_fixed_dir_per_platform_ignores_environment(monkeypatch):
 
 
 def test_other_data_dir_and_xdg_share_the_quota(tmp_path):
-    """Two processes with different data dirs and XDG_DATA_HOME count into one quota."""
+    """Two processes with different data dirs count into one quota on every OS; on Linux the second data dir also
+    comes from another XDG_DATA_HOME, the variable that used to move the quota with the data."""
     script = tmp_path / "count.py"
     script.write_text(
         "import pathlib, sys\nfrom kataster_mcp.cache import default_data_dir\nfrom kataster_mcp.policy import PUBLIC_POLICY\n"
         "from kataster_mcp.server import create_server\n"
-        "s = create_server(PUBLIC_POLICY, data_dir=default_data_dir(), limits_dir=pathlib.Path(sys.argv[1]))\n"
+        "data = pathlib.Path(sys.argv[3]) if sys.argv[3] != '-' else default_data_dir()\n"
+        "s = create_server(PUBLIC_POLICY, data_dir=data, limits_dir=pathlib.Path(sys.argv[1]))\n"
         "s.app_state.quota.record(sys.argv[2])\n"
-        "print(s.app_state.data_dir, s.app_state.quota.used(), s.app_state.http.pacer.dir)\n", encoding="utf8")
+        "print(s.app_state.data_dir, s.app_state.quota.used(), s.app_state.http.pacer.dir, sep='|')\n", encoding="utf8")
     out = []
     for i, parcel in enumerate(("871541|E 503", "871541|C 660/66")):
         env = {**os.environ, "PYTHONPATH": SRC, "XDG_DATA_HOME": str(tmp_path / f"xdg{i}")}
-        out.append(subprocess.run([sys.executable, str(script), str(tmp_path / "limity"), parcel], env=env,
-                                  capture_output=True, text=True, timeout=30, check=True).stdout.split())
+        # elsewhere XDG_DATA_HOME means nothing: the data dir is given as an argument
+        data = "-" if sys.platform.startswith("linux") else str(tmp_path / f"data{i}")
+        out.append(subprocess.run([sys.executable, str(script), str(tmp_path / "limity"), parcel, data], env=env,
+                                  capture_output=True, text=True, timeout=30, check=True).stdout.strip().split("|"))
     assert out[0][0] != out[1][0]  # really two data dirs
     assert (out[0][1], out[1][1]) == ("1", "2")
     assert out[0][2] == out[1][2] == str(tmp_path / "limity" / "tempo")  # and the same pause
